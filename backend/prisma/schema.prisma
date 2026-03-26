@@ -1,0 +1,188 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ Multi-Tenancy ============
+
+model Tenant {
+  id           String       @id @default(cuid())
+  name         String
+  custodyModel String       @default("MODEL_A") // MODEL_A or MODEL_B
+  apiKeyHash   String       @unique
+  webhookUrl   String?
+  webhookSecret String?
+  status       String       @default("active") // active, suspended, disabled
+  rateLimit    Int          @default(1000) // requests per minute
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  users        User[]
+  subAccounts  SubAccount[]
+  auditLogs    AuditLog[]
+
+  @@index([status])
+}
+
+// ============ Users ============
+
+model User {
+  id            String       @id @default(cuid())
+  tenantId      String
+  externalId    String       // tenant's user identifier
+  email         String?
+  kycStatus     String       @default("pending") // pending, approved, rejected
+  m2SafeAddress String?      @unique
+  eoaAddress    String?      @unique
+  status        String       @default("active") // active, frozen, closed
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  tenant        Tenant       @relation(fields: [tenantId], references: [id])
+  subAccounts   SubAccount[]
+  transactions  Transaction[]
+  balanceLedger BalanceLedger[]
+
+  @@unique([tenantId, externalId])
+  @@index([tenantId])
+  @@index([m2SafeAddress])
+}
+
+// ============ Sub-Accounts (Cards) ============
+
+model SubAccount {
+  id              String    @id @default(cuid())
+  tenantId        String
+  userId          String
+  lithicCardToken String?   @unique
+  lithicCardId    String?
+  eoaAddress      String?
+  type            String    @default("virtual") // virtual, physical
+  dailyLimit      BigInt    @default(0) // cents
+  monthlyLimit    BigInt    @default(0) // cents
+  mccBlacklist    String[]  // array of MCC codes
+  status          String    @default("active") // active, frozen, cancelled
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  tenant          Tenant    @relation(fields: [tenantId], references: [id])
+  user            User      @relation(fields: [userId], references: [id])
+  transactions    Transaction[]
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([lithicCardToken])
+}
+
+// ============ Transactions ============
+
+model Transaction {
+  id              String    @id @default(cuid())
+  tenantId        String
+  userId          String
+  subAccountId    String?
+  lithicTxToken   String    @unique
+  type            String    // authorization, settlement, reversal, deposit, withdrawal
+  amount          BigInt    // cents for card txs, 6-decimal for USDC
+  currency        String    @default("USD")
+  merchantName    String?
+  merchantMcc     String?
+  status          String    @default("pending") // pending, approved, declined, settled, reversed, failed
+  onChainTxHash   String?
+  settlementNonce BigInt?
+  errorMessage    String?
+  retryCount      Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user            User      @relation(fields: [userId], references: [id])
+  subAccount      SubAccount? @relation(fields: [subAccountId], references: [id])
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([lithicTxToken])
+  @@index([status])
+  @@index([type, status])
+}
+
+// ============ Balance Ledger ============
+
+model BalanceLedger {
+  id          String    @id @default(cuid())
+  tenantId    String
+  userId      String
+  token       String    @default("USDC") // token identifier
+  type        String    // deposit, spend, refund, yield, sweep
+  amount      String    // 6-decimal string (USDC)
+  reference   String?   // tx hash or lithic token
+  note        String?
+  createdAt   DateTime  @default(now())
+
+  user        User      @relation(fields: [userId], references: [id])
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([type])
+}
+
+// ============ Yield Ledger ============
+
+model YieldLedger {
+  id              String    @id @default(cuid())
+  tenantId        String
+  snapshotDate    DateTime
+  totalDeposited  String    // 6-decimal USDC
+  totalShares     String    // vault shares
+  totalYield      String    // 6-decimal USDC
+  apyBps          Int       // basis points
+  createdAt       DateTime  @default(now())
+
+  @@index([tenantId])
+  @@index([snapshotDate])
+}
+
+// ============ Watcher State ============
+
+model WatcherMeta {
+  key   String @id
+  value String
+}
+
+// ============ Spend Events (On-Chain) ============
+
+model SpendSettledEvent {
+  id          String    @id @default(cuid())
+  blockNumber BigInt
+  txHash      String
+  logIndex    Int
+  m2Safe      String
+  issuerSafe  String
+  amount      String    // 6-decimal USDC
+  lithicTxToken String  @unique
+  nonce       BigInt
+  createdAt   DateTime  @default(now())
+
+  @@index([m2Safe])
+  @@index([blockNumber])
+}
+
+// ============ Audit Log ============
+
+model AuditLog {
+  id        String    @id @default(cuid())
+  tenantId  String?
+  action    String    // settlement_executed, settlement_failed, auth_approved, auth_declined, etc.
+  userId    String?
+  details   Json?
+  createdAt DateTime  @default(now())
+
+  tenant    Tenant?   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([action])
+  @@index([userId])
+}

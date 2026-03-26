@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+contracts/lib/
+
+# Build outputs
+contracts/out/
+contracts/cache/
+backend/dist/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Foundry
+contracts/broadcast/
+contracts/deployments/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+coverage/

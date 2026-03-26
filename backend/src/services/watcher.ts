@@ -36,6 +36,7 @@ const WATCHER_META_KEY_LAST_BLOCK = "watcher:lastProcessedBlock";
 const CONFIRMATION_BUFFER = 2; // blocks behind head to account for reorgs
 const MAX_CONSECUTIVE_FAILURES = 5;
 const CIRCUIT_BREAKER_PAUSE_MS = 30_000;
+const RECONCILIATION_INTERVAL_MS = 60_000; // 60s full balance reconciliation
 
 // ============ Watcher Service ============
 
@@ -49,7 +50,9 @@ export class Watcher {
   private pollIntervalMs: number;
   private running = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private reconciliationTimer: ReturnType<typeof setTimeout> | null = null;
   private consecutiveFailures = 0;
+  private lastReconciliationAt = 0;
 
   /** Timestamp (ms) of the last successful poll — exposed for health checks. */
   public lastPollAt = 0;
@@ -78,9 +81,10 @@ export class Watcher {
     }
     this.running = true;
     console.log(
-      `[Watcher] starting — poll interval ${this.pollIntervalMs}ms, confirmation buffer ${CONFIRMATION_BUFFER} blocks`,
+      `[Watcher] starting — poll interval ${this.pollIntervalMs}ms, reconciliation every ${RECONCILIATION_INTERVAL_MS}ms`,
     );
     this.scheduleNextPoll(0); // first poll immediately
+    this.scheduleReconciliation();
   }
 
   stop(): void {
@@ -88,6 +92,10 @@ export class Watcher {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
+    }
+    if (this.reconciliationTimer) {
+      clearTimeout(this.reconciliationTimer);
+      this.reconciliationTimer = null;
     }
     console.log("[Watcher] stopped");
   }
@@ -272,7 +280,7 @@ export class Watcher {
         name: "SpendSettled",
         inputs: [
           { name: "m2Safe", type: "address", indexed: true },
-          { name: "issuerSafe", type: "address", indexed: false },
+          { name: "issuerSafe", type: "address", indexed: true },
           { name: "amount", type: "uint256", indexed: false },
           { name: "lithicTxToken", type: "bytes32", indexed: true },
           { name: "nonce", type: "uint256", indexed: false },
@@ -416,6 +424,85 @@ export class Watcher {
         `[Watcher] failed to update Redis cache for deposit to ${user.m2SafeAddress}`,
         err,
       );
+    }
+  }
+
+  // ============ 60s Reconciliation ============
+  // Full balance check: verify on-chain USDC balances match Redis cache
+
+  private scheduleReconciliation(): void {
+    if (!this.running) return;
+    this.reconciliationTimer = setTimeout(() => {
+      this.reconcile().catch((err) => {
+        console.error("[Watcher] reconciliation error:", err);
+      });
+    }, RECONCILIATION_INTERVAL_MS);
+  }
+
+  private async reconcile(): Promise<void> {
+    if (!this.running) return;
+
+    try {
+      const users = await this.prisma.user.findMany({
+        where: {
+          m2SafeAddress: { not: null },
+          eoaAddress: { not: null },
+          status: "active",
+        },
+        select: {
+          id: true,
+          tenantId: true,
+          eoaAddress: true,
+          m2SafeAddress: true,
+        },
+      });
+
+      let reconciled = 0;
+      for (const user of users) {
+        if (!user.m2SafeAddress || !user.eoaAddress) continue;
+
+        try {
+          const onChainBalance = (await this.publicClient.readContract({
+            address: this.config.usdcAddress as `0x${string}`,
+            abi: ERC20_ABI,
+            functionName: "balanceOf",
+            args: [user.m2SafeAddress as `0x${string}`],
+          })) as bigint;
+
+          // Get existing cache to preserve spend tracking
+          const { getAuthCache } = await import("../lib/redis.js");
+          const existing = await getAuthCache(this.redis, user.eoaAddress);
+
+          const cache: AuthorizationCache = {
+            eoaAddress: user.eoaAddress,
+            m2SafeAddress: user.m2SafeAddress,
+            tenantId: user.tenantId,
+            usdcBalance: onChainBalance.toString(),
+            dailySpent: existing?.dailySpent ?? "0",
+            dailyLimit: existing?.dailyLimit ?? "0",
+            monthlySpent: existing?.monthlySpent ?? "0",
+            monthlyLimit: existing?.monthlyLimit ?? "0",
+            lastUpdated: Date.now(),
+          };
+
+          await setAuthCache(this.redis, user.eoaAddress, cache);
+          reconciled++;
+        } catch (err) {
+          console.error(
+            `[Watcher] reconciliation failed for user ${user.id} (safe=${user.m2SafeAddress})`,
+            err,
+          );
+        }
+      }
+
+      this.lastReconciliationAt = Date.now();
+      if (reconciled > 0) {
+        console.log(
+          `[Watcher] reconciliation complete — ${reconciled}/${users.length} users updated`,
+        );
+      }
+    } finally {
+      this.scheduleReconciliation();
     }
   }
 }

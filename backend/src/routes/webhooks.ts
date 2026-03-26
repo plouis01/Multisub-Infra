@@ -1,16 +1,24 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
+import type { PrismaClient } from "@prisma/client";
 import type { AuthorizationEngine } from "../services/authorization-engine.js";
+import type { SettlementService } from "../services/settlement-service.js";
 import type { LithicClient } from "../integrations/lithic.js";
 import type { WebhookDispatcher } from "../services/webhook-dispatcher.js";
+import { getCardMapping } from "../lib/redis.js";
+import type { Redis } from "ioredis";
 import type { LithicASAResponse, WebhookEventType } from "../types/index.js";
 
 // ============ Types ============
 
 interface WebhooksDeps {
   authorizationEngine: AuthorizationEngine;
+  settlementService: SettlementService | null;
   lithicClient: LithicClient;
   webhookDispatcher: WebhookDispatcher | null;
+  prisma: PrismaClient;
+  redis: Redis;
+  platformIssuerSafeAddress: string;
 }
 
 // ============ Webhooks Router ============
@@ -23,7 +31,15 @@ interface WebhooksDeps {
  */
 export function createWebhooksRouter(deps: WebhooksDeps): Router {
   const router = Router();
-  const { authorizationEngine, lithicClient, webhookDispatcher } = deps;
+  const {
+    authorizationEngine,
+    settlementService,
+    lithicClient,
+    webhookDispatcher,
+    prisma,
+    redis,
+    platformIssuerSafeAddress,
+  } = deps;
 
   // ---------- POST /webhooks/lithic/asa — Lithic ASA webhook ----------
 
@@ -59,16 +75,61 @@ export function createWebhooksRouter(deps: WebhooksDeps): Router {
         result: result.approved ? "APPROVED" : "DECLINED",
       };
 
+      // Lookup card mapping for tenant context
+      const cardMapping = await getCardMapping(redis, event.card_token);
+
+      // Create Transaction record and enqueue settlement (fire-and-forget)
+      if (cardMapping) {
+        const txRecord = prisma.transaction
+          .create({
+            data: {
+              tenantId: cardMapping.tenantId,
+              userId: cardMapping.subAccountId,
+              lithicTxToken: event.token,
+              type: "authorization",
+              amount: BigInt(event.amount),
+              currency: "USD",
+              merchantName: event.merchant.descriptor,
+              merchantMcc: event.merchant.mcc,
+              status: result.approved ? "approved" : "declined",
+            },
+          })
+          .catch((err: unknown) => {
+            console.error(
+              "[Webhooks] Failed to create transaction record:",
+              err,
+            );
+          });
+
+        // Enqueue settlement job on approval
+        if (result.approved && settlementService && cardMapping.m2SafeAddress) {
+          txRecord.then(() => {
+            settlementService
+              .enqueue({
+                lithicTxToken: event.token,
+                m2SafeAddress: cardMapping.m2SafeAddress,
+                issuerSafeAddress: platformIssuerSafeAddress,
+                amount: event.amount.toString(),
+                tenantId: cardMapping.tenantId,
+                attempt: 1,
+                createdAt: Date.now(),
+              })
+              .catch((err: unknown) => {
+                console.error(
+                  "[Webhooks] Failed to enqueue settlement job:",
+                  err,
+                );
+              });
+          });
+        }
+      }
+
       // Dispatch webhook event to tenant (fire and forget)
       if (webhookDispatcher) {
         const eventType: WebhookEventType = result.approved
           ? "card.authorization.approved"
           : "card.authorization.declined";
 
-        // We need the tenantId from the card mapping — the authorization engine
-        // already looked this up, but we do a lightweight lookup here to get it
-        // for webhook dispatch. In a production system you'd pass this through
-        // the authorization result.
         webhookDispatcher
           .dispatchForCard(event.card_token, {
             type: eventType,

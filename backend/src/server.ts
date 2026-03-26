@@ -125,8 +125,12 @@ async function main(): Promise<void> {
   app.use(
     createWebhooksRouter({
       authorizationEngine,
+      settlementService,
       lithicClient,
       webhookDispatcher,
+      prisma,
+      redis,
+      platformIssuerSafeAddress: config.platformIssuerSafeAddress,
     }),
   );
 

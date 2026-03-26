@@ -163,11 +163,13 @@ export function createCardsRouter(deps: CardsDeps): Router {
         orderBy: { createdAt: "desc" },
       });
 
-      const cards = subAccounts.map((sa) => ({
-        ...sa,
-        dailyLimit: sa.dailyLimit.toString(),
-        monthlyLimit: sa.monthlyLimit.toString(),
-      }));
+      const cards = subAccounts.map(
+        (sa: { dailyLimit: bigint; monthlyLimit: bigint }) => ({
+          ...sa,
+          dailyLimit: sa.dailyLimit.toString(),
+          monthlyLimit: sa.monthlyLimit.toString(),
+        }),
+      );
 
       res.json({ cards });
     } catch (error) {

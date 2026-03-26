@@ -120,11 +120,13 @@ export function createUsersRouter(deps: UsersDeps): Router {
       // Convert BigInt fields to strings for JSON serialization
       const response = {
         ...user,
-        subAccounts: user.subAccounts.map((sa) => ({
-          ...sa,
-          dailyLimit: sa.dailyLimit.toString(),
-          monthlyLimit: sa.monthlyLimit.toString(),
-        })),
+        subAccounts: user.subAccounts.map(
+          (sa: { dailyLimit: bigint; monthlyLimit: bigint }) => ({
+            ...sa,
+            dailyLimit: sa.dailyLimit.toString(),
+            monthlyLimit: sa.monthlyLimit.toString(),
+          }),
+        ),
       };
 
       res.json(response);

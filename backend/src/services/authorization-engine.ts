@@ -1,4 +1,4 @@
-import Redis from "ioredis";
+import type { Redis as RedisType } from "ioredis";
 import type { PrismaClient } from "@prisma/client";
 import {
   getAuthCache,
@@ -60,10 +60,10 @@ export class AuthorizationError extends Error {
 // ============ Authorization Engine ============
 
 export class AuthorizationEngine {
-  private readonly redis: Redis;
+  private readonly redis: RedisType;
   private readonly prisma: PrismaClient;
 
-  constructor(redis: Redis, prisma: PrismaClient) {
+  constructor(redis: RedisType, prisma: PrismaClient) {
     this.redis = redis;
     this.prisma = prisma;
   }

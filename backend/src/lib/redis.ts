@@ -1,4 +1,6 @@
-import Redis from "ioredis";
+import { Redis as IORedis } from "ioredis";
+
+type RedisType = InstanceType<typeof IORedis>;
 import type { AuthorizationCache, CardMapping } from "../types/index.js";
 
 // ============ Redis Key Schema ============
@@ -14,10 +16,10 @@ const KEY_PREFIX = {
   LOCK: "lock:",
 } as const;
 
-export function createRedisClient(url: string): Redis {
-  return new Redis(url, {
+export function createRedisClient(url: string): RedisType {
+  return new IORedis(url, {
     maxRetriesPerRequest: 3,
-    retryStrategy(times) {
+    retryStrategy(times: number) {
       if (times > 5) return null;
       return Math.min(times * 200, 2000);
     },
@@ -28,7 +30,7 @@ export function createRedisClient(url: string): Redis {
 // ============ Authorization Cache ============
 
 export async function getAuthCache(
-  redis: Redis,
+  redis: RedisType,
   eoaAddress: string,
 ): Promise<AuthorizationCache | null> {
   const raw = await redis.get(`${KEY_PREFIX.AUTH}${eoaAddress.toLowerCase()}`);
@@ -37,7 +39,7 @@ export async function getAuthCache(
 }
 
 export async function setAuthCache(
-  redis: Redis,
+  redis: RedisType,
   eoaAddress: string,
   cache: AuthorizationCache,
   ttlSeconds = 300,
@@ -51,7 +53,7 @@ export async function setAuthCache(
 }
 
 export async function updateAuthCacheSpend(
-  redis: Redis,
+  redis: RedisType,
   eoaAddress: string,
   amountCents: number,
 ): Promise<AuthorizationCache | null> {
@@ -89,7 +91,7 @@ export async function updateAuthCacheSpend(
 // ============ Card Mapping ============
 
 export async function getCardMapping(
-  redis: Redis,
+  redis: RedisType,
   cardToken: string,
 ): Promise<CardMapping | null> {
   const raw = await redis.get(`${KEY_PREFIX.CARD}${cardToken}`);
@@ -98,7 +100,7 @@ export async function getCardMapping(
 }
 
 export async function setCardMapping(
-  redis: Redis,
+  redis: RedisType,
   cardToken: string,
   mapping: CardMapping,
 ): Promise<void> {
@@ -108,7 +110,7 @@ export async function setCardMapping(
 // ============ Rate Limiting ============
 
 export async function checkRateLimit(
-  redis: Redis,
+  redis: RedisType,
   tenantId: string,
   limit: number,
   windowSeconds = 60,

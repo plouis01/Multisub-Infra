@@ -352,7 +352,7 @@ export class SettlementService {
         data: {
           tenantId,
           action,
-          details,
+          details: details as object,
         },
       });
     } catch (err) {

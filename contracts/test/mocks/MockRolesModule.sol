@@ -16,11 +16,14 @@ contract MockRolesModule {
     error InvalidOwner();
 
     /// @notice Initialize the clone (called post-deployment instead of constructor)
-    /// @param _owner The module owner (typically the Safe)
-    /// @param _avatar The Safe this module is attached to
-    /// @param _target The contract on which the module executes transactions
-    function setUp(address _owner, address _avatar, address _target) external {
+    /// @dev Zodiac standard signature: setUp(bytes memory initializeParams)
+    ///      where initializeParams = abi.encode(owner, avatar, target)
+    /// @param initializeParams ABI-encoded (address owner, address avatar, address target)
+    function setUp(bytes memory initializeParams) external {
         if (_initialized) revert AlreadyInitialized();
+
+        (address _owner, address _avatar, address _target) = abi.decode(initializeParams, (address, address, address));
+
         if (_owner == address(0)) revert InvalidOwner();
 
         owner = _owner;

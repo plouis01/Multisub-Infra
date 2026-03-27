@@ -56,8 +56,9 @@ contract SpendSettler is Module, ReentrancyGuard, Pausable, ISpendSettler {
         uint128 timestamp;
     }
 
-    SpendRecord[] private _spendHistory;
-    uint256 private _spendHistoryStart;
+    SpendRecord[200] private _spendRecords; // Fixed-size circular buffer (MAX_RECORDS)
+    uint256 private _recordHead; // Next write position
+    uint256 private _recordCount; // Number of active records
 
     // ============ Errors ============
 
@@ -68,7 +69,6 @@ contract SpendSettler is Module, ReentrancyGuard, Pausable, ISpendSettler {
     error InvalidSettler();
     error InvalidIssuerSafe();
     error InvalidUsdcAddress();
-    error TooManySpendRecords();
     error AmountTooLarge();
     error AmountExceedsMaxSettle(uint256 amount, uint256 max);
 
@@ -196,44 +196,42 @@ contract SpendSettler is Module, ReentrancyGuard, Pausable, ISpendSettler {
 
     /// @notice Number of active spend records in the current window
     function getActiveRecordCount() external view returns (uint256) {
-        uint256 len = _spendHistory.length;
-        return len > _spendHistoryStart ? len - _spendHistoryStart : 0;
+        return _recordCount;
     }
 
     // ============ Internal Functions ============
 
     /// @notice Calculate total spend within the rolling 24h window
     function _getRollingSpend() internal view returns (uint256 total) {
-        uint256 length = _spendHistory.length;
-        uint256 start = _spendHistoryStart;
+        uint256 count = _recordCount;
+        if (count == 0) return 0;
+
         uint256 windowStart = block.timestamp > WINDOW_DURATION ? block.timestamp - WINDOW_DURATION : 0;
 
-        for (uint256 i = length; i > start; i--) {
-            SpendRecord storage record = _spendHistory[i - 1];
+        // Read backwards from most recent entry
+        uint256 idx = _recordHead;
+        for (uint256 i = 0; i < count; i++) {
+            // Go back one position (circular)
+            idx = idx == 0 ? MAX_RECORDS - 1 : idx - 1;
+            SpendRecord storage record = _spendRecords[idx];
             if (uint256(record.timestamp) < windowStart) break;
             total += uint256(record.amount);
         }
     }
 
-    /// @notice Record a spend and clean up expired records
+    /// @notice Record a spend to the circular buffer
     function _recordSpend(uint256 amount) internal {
-        uint256 start = _spendHistoryStart;
-        uint256 windowStart = block.timestamp > WINDOW_DURATION ? block.timestamp - WINDOW_DURATION : 0;
+        if (amount > type(uint128).max) revert AmountTooLarge();
 
-        // Advance start index past expired records
-        uint256 length = _spendHistory.length;
-        while (start < length && uint256(_spendHistory[start].timestamp) < windowStart) {
-            unchecked {
-                start++;
+        // Write to circular buffer at head position
+        _spendRecords[_recordHead] = SpendRecord({amount: uint128(amount), timestamp: uint128(block.timestamp)});
+
+        // Advance head (wrap around)
+        unchecked {
+            _recordHead = (_recordHead + 1) % MAX_RECORDS;
+            if (_recordCount < MAX_RECORDS) {
+                _recordCount++;
             }
         }
-        _spendHistoryStart = start;
-
-        // Safety check
-        uint256 activeRecords = length - start;
-        if (activeRecords >= MAX_RECORDS) revert TooManySpendRecords();
-
-        if (amount > type(uint128).max) revert AmountTooLarge();
-        _spendHistory.push(SpendRecord({amount: uint128(amount), timestamp: uint128(block.timestamp)}));
     }
 }

@@ -509,8 +509,18 @@ contract TenantRegistryTest is Test {
 
     function test_transferOwnership() public {
         address newOwner = address(0x99);
+
+        // Step 1: Current owner initiates transfer
         vm.prank(owner);
         registry.transferOwnership(newOwner);
+
+        // Owner is still the old owner until accepted
+        assertEq(registry.owner(), owner);
+        assertEq(registry.pendingOwner(), newOwner);
+
+        // Step 2: New owner accepts ownership
+        vm.prank(newOwner);
+        registry.acceptOwnership();
         assertEq(registry.owner(), newOwner);
 
         // Old owner can no longer register tenants

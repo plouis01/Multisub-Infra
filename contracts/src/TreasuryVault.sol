@@ -138,6 +138,11 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
         bool depositSuccess = exec(morphoVault, 0, depositData, ISafe.Operation.Call);
         if (!depositSuccess) revert ExecutionFailed();
 
+        // Reset approval to 0 to prevent lingering allowance
+        bytes memory resetApproval = abi.encodeWithSelector(IERC20.approve.selector, morphoVault, uint256(0));
+        exec(usdc, 0, resetApproval, ISafe.Operation.Call);
+        // Best effort — don't check return
+
         // Measure actual shares minted via before/after balance snapshot
         uint256 sharesAfter = IMorphoVault(morphoVault).balanceOf(avatar);
         shares = sharesAfter - sharesBefore;
@@ -170,6 +175,12 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
         if (usdcAmount == 0) revert ZeroAmount();
 
         TenantPosition storage pos = _tenantPositions[tenantId];
+
+        // Pre-check: estimate shares needed and validate tenant has enough
+        uint256 estimatedShares = IMorphoVault(morphoVault).convertToShares(usdcAmount);
+        if (estimatedShares > pos.shares) {
+            revert InsufficientShares(tenantId, estimatedShares, pos.shares);
+        }
 
         // Snapshot share balance before withdrawal
         uint256 sharesBefore = IMorphoVault(morphoVault).balanceOf(avatar);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {ITenantRegistry} from "./interfaces/ITenantRegistry.sol";
 
 /// @title TenantRegistry
@@ -9,7 +9,7 @@ import {ITenantRegistry} from "./interfaces/ITenantRegistry.sol";
 ///         for settlement validation and paginated views for off-chain indexing.
 /// @dev Used by SpendSettler to validate settlement requests. Only the authorized
 ///      SafeFactory can register users; only the owner can register tenants.
-contract TenantRegistry is ITenantRegistry, Ownable {
+contract TenantRegistry is ITenantRegistry, Ownable2Step {
     // ============ State Variables ============
 
     /// @notice O(1) lookup: tenantId => m2Safe => registered

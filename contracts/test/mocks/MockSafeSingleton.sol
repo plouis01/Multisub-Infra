@@ -18,8 +18,8 @@ contract MockSafeSingleton {
     function setup(
         address[] calldata _owners,
         uint256 _threshold,
-        address,
-        bytes calldata,
+        address to,
+        bytes calldata data,
         address,
         address,
         uint256,
@@ -34,6 +34,12 @@ contract MockSafeSingleton {
         }
         threshold = _threshold;
         _initialized = true;
+
+        // Mimic real Safe: delegatecall to `to` with `data` if provided
+        if (to != address(0)) {
+            (bool success,) = to.delegatecall(data);
+            require(success, "Setup delegatecall failed");
+        }
 
         emit SafeSetup(msg.sender, _owners, _threshold);
     }

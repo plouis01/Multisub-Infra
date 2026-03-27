@@ -180,9 +180,8 @@ contract TreasuryVaultTest is Test {
         vm.prank(operatorEOA);
         vault.depositForTenant(tenantA, 10_000e6);
 
-        // Try to withdraw 20k (more shares than the Safe holds in the Morpho vault)
-        // The underlying vault reverts, causing exec to return false -> ExecutionFailed
-        vm.expectRevert(TreasuryVault.ExecutionFailed.selector);
+        // Try to withdraw 20k — pre-check catches that estimated shares > tenant's shares
+        vm.expectRevert(abi.encodeWithSelector(TreasuryVault.InsufficientShares.selector, tenantA, 20_000e6, 10_000e6));
         vm.prank(operatorEOA);
         vault.withdrawForTenant(tenantA, 20_000e6);
     }

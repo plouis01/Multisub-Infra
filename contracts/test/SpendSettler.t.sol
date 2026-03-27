@@ -274,11 +274,14 @@ contract SpendSettlerTest is Test {
         assertEq(settler.getActiveRecordCount(), 2);
         vm.stopPrank();
 
-        // After 25 hours and a new settlement, old records should be cleaned
+        // After 25 hours and a new settlement, circular buffer retains all records
+        // (count reflects total records written, not just those in the active window)
         vm.warp(block.timestamp + 25 hours);
         vm.prank(settlerEOA);
         settler.settle(5e6, keccak256("tx-003"));
-        assertEq(settler.getActiveRecordCount(), 1);
+        assertEq(settler.getActiveRecordCount(), 3);
+        // But rolling spend only counts the in-window record
+        assertEq(settler.getRollingSpend(), 5e6);
     }
 
     // ============ Fuzz Tests ============

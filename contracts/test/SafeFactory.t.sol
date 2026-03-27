@@ -7,6 +7,7 @@ import {ISafeFactory} from "../src/interfaces/ISafeFactory.sol";
 import {TenantRegistry} from "../src/TenantRegistry.sol";
 import {ITenantRegistry} from "../src/interfaces/ITenantRegistry.sol";
 import {SpendSettler} from "../src/SpendSettler.sol";
+import {ModuleSetupHelper} from "../src/ModuleSetupHelper.sol";
 import {MockSafeSingleton} from "./mocks/MockSafeSingleton.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockRolesModule} from "./mocks/MockRolesModule.sol";
@@ -19,6 +20,7 @@ contract SafeFactoryTest is Test {
     MockERC20 public usdc;
     MockRolesModule public rolesSingleton;
     MockDelayModule public delaySingleton;
+    ModuleSetupHelper public setupHelper;
 
     address public owner = address(0xAA);
     address public settlerEOA = address(0xBB);
@@ -34,6 +36,7 @@ contract SafeFactoryTest is Test {
         usdc = new MockERC20("USD Coin", "USDC", 6);
         rolesSingleton = new MockRolesModule();
         delaySingleton = new MockDelayModule();
+        setupHelper = new ModuleSetupHelper();
 
         vm.startPrank(owner);
 
@@ -54,6 +57,7 @@ contract SafeFactoryTest is Test {
 
         // Wire up registry <-> factory
         factory.setRegistry(address(registry));
+        factory.setModuleSetupHelper(address(setupHelper));
         registry.setFactory(address(factory));
 
         // Register a tenant
@@ -415,6 +419,28 @@ contract SafeFactoryTest is Test {
         factoryNoRegistry.deploySafe(tenantId, userSigner, uint8(ISafeFactory.CustodyModel.MODEL_A));
     }
 
+    function test_deploySafe_modelA_revertsWithoutModuleSetupHelper() public {
+        vm.startPrank(owner);
+        SafeFactory factoryNoHelper = new SafeFactory(
+            owner,
+            address(safeSingleton),
+            address(0x01),
+            settlerEOA,
+            issuerSafe,
+            address(usdc),
+            address(rolesSingleton),
+            address(delaySingleton)
+        );
+        factoryNoHelper.setRegistry(address(registry));
+        registry.setFactory(address(factoryNoHelper));
+        vm.stopPrank();
+
+        // Model A should revert because moduleSetupHelper is not set
+        vm.expectRevert(SafeFactory.ModuleSetupHelperNotSet.selector);
+        vm.prank(owner);
+        factoryNoHelper.deploySafe(tenantId, userSigner, uint8(ISafeFactory.CustodyModel.MODEL_A));
+    }
+
     // ============ Multiple Deployments Tests ============
 
     function test_deploySafe_multipleForSameTenant() public {
@@ -626,6 +652,7 @@ contract SafeFactoryTest is Test {
             address(delaySingleton)
         );
         factoryNoRoles.setRegistry(address(registry));
+        factoryNoRoles.setModuleSetupHelper(address(setupHelper));
         vm.stopPrank();
 
         // Need to authorize this factory in the registry
@@ -654,6 +681,7 @@ contract SafeFactoryTest is Test {
             address(0) // no delay impl
         );
         factoryNoDelay.setRegistry(address(registry));
+        factoryNoDelay.setModuleSetupHelper(address(setupHelper));
         vm.stopPrank();
 
         vm.prank(owner);
@@ -768,8 +796,18 @@ contract SafeFactoryTest is Test {
 
     function test_transferOwnership() public {
         address newOwner = address(0x99);
+
+        // Step 1: Current owner initiates transfer
         vm.prank(owner);
         factory.transferOwnership(newOwner);
+
+        // Owner is still the old owner until accepted
+        assertEq(factory.owner(), owner);
+        assertEq(factory.pendingOwner(), newOwner);
+
+        // Step 2: New owner accepts ownership
+        vm.prank(newOwner);
+        factory.acceptOwnership();
         assertEq(factory.owner(), newOwner);
 
         // Old owner can no longer deploy
@@ -777,10 +815,7 @@ contract SafeFactoryTest is Test {
         vm.prank(owner);
         factory.deploySafe(tenantId, userSigner, uint8(ISafeFactory.CustodyModel.MODEL_B));
 
-        // New owner can deploy (but we need to set up registry auth first)
-        vm.prank(owner);
-        registry.setFactory(address(factory)); // re-authorize if needed
-
+        // New owner can deploy
         vm.prank(newOwner);
         address m2Safe = factory.deploySafe(tenantId, userSigner, uint8(ISafeFactory.CustodyModel.MODEL_B));
         assertTrue(m2Safe != address(0));

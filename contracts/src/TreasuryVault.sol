@@ -247,11 +247,7 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
 
         // Update global totals
         totalTenantShares -= shares;
-        if (depositReduction > totalDeposited) {
-            totalDeposited = 0;
-        } else {
-            totalDeposited -= depositReduction;
-        }
+        totalDeposited -= depositReduction;
 
         emit TenantWithdraw(tenantId, assetsReceived, shares);
     }

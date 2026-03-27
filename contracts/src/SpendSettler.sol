@@ -134,10 +134,17 @@ contract SpendSettler is Module, ReentrancyGuard, Pausable, ISpendSettler {
         // Record spend for rolling window tracking
         _recordSpend(amount);
 
+        // Snapshot issuerSafe USDC balance before transfer
+        uint256 balanceBefore = IERC20(usdc).balanceOf(issuerSafe);
+
         // Execute USDC transfer through the M2 Safe
         bytes memory transferData = abi.encodeWithSelector(IERC20.transfer.selector, issuerSafe, amount);
         bool success = exec(usdc, 0, transferData, ISafe.Operation.Call);
         if (!success) revert TransferFailed();
+
+        // Verify the transfer actually moved the expected amount
+        uint256 balanceAfter = IERC20(usdc).balanceOf(issuerSafe);
+        if (balanceAfter - balanceBefore < amount) revert TransferFailed();
 
         // Update totals
         uint256 currentNonce;

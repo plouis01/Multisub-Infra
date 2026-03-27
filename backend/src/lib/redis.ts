@@ -92,29 +92,91 @@ export async function updateAuthCacheSpend(
 
 const SPEND_LUA_SCRIPT = `
 local key = KEYS[1]
-local amountCents = tonumber(ARGV[1])
+local spendAmount = ARGV[1]
+local nowMs = ARGV[2]
 local raw = redis.call('GET', key)
 if not raw then return nil end
 
 local cache = cjson.decode(raw)
-local balance = tonumber(cache.usdcBalance)
-local dailySpent = tonumber(cache.dailySpent)
-local monthlySpent = tonumber(cache.monthlySpent)
-local dailyLimit = tonumber(cache.dailyLimit)
-local monthlyLimit = tonumber(cache.monthlyLimit)
 
--- Check balance
-if balance < amountCents then return cjson.encode({error = "insufficient_balance"}) end
--- Check daily limit
-if dailyLimit > 0 and (dailySpent + amountCents) > dailyLimit then return cjson.encode({error = "daily_limit"}) end
+-- Use string-to-number only via comparison helpers that handle large values
+-- Redis Lua 5.1 has 64-bit integers in Redis 7+ via redis.math, but for
+-- compatibility we compare as strings with zero-padding
+
+local function str_gte(a, b)
+  -- Compare two non-negative integer strings
+  if #a ~= #b then return #a > #b end
+  return a >= b
+end
+
+local function str_add(a, b)
+  -- Add two non-negative integer strings
+  local result = {}
+  local carry = 0
+  local la, lb = #a, #b
+  local maxlen = math.max(la, lb)
+  for i = 0, maxlen - 1 do
+    local da = i < la and tonumber(a:sub(la - i, la - i)) or 0
+    local db = i < lb and tonumber(b:sub(lb - i, lb - i)) or 0
+    local sum = da + db + carry
+    carry = math.floor(sum / 10)
+    result[maxlen - i] = tostring(sum % 10)
+  end
+  if carry > 0 then table.insert(result, 1, tostring(carry)) end
+  return table.concat(result)
+end
+
+local function str_sub(a, b)
+  -- Subtract b from a (assumes a >= b), both non-negative integer strings
+  local result = {}
+  local borrow = 0
+  local la, lb = #a, #b
+  for i = 0, la - 1 do
+    local da = tonumber(a:sub(la - i, la - i))
+    local db = i < lb and tonumber(b:sub(lb - i, lb - i)) or 0
+    local diff = da - db - borrow
+    if diff < 0 then diff = diff + 10; borrow = 1 else borrow = 0 end
+    result[la - i] = tostring(diff)
+  end
+  -- Remove leading zeros
+  local s = table.concat(result)
+  s = s:gsub("^0+", "")
+  if s == "" then s = "0" end
+  return s
+end
+
+local balance = cache.usdcBalance
+local dailySpent = cache.dailySpent
+local monthlySpent = cache.monthlySpent
+local dailyLimit = cache.dailyLimit
+local monthlyLimit = cache.monthlyLimit
+
+-- Check balance: balance >= spendAmount
+if not str_gte(balance, spendAmount) then
+  return cjson.encode({error = "insufficient_balance"})
+end
+
+-- Check daily limit: if dailyLimit > "0", then dailySpent + spendAmount <= dailyLimit
+if dailyLimit ~= "0" then
+  local newDaily = str_add(dailySpent, spendAmount)
+  if not str_gte(dailyLimit, newDaily) then
+    return cjson.encode({error = "daily_limit"})
+  end
+end
+
 -- Check monthly limit
-if monthlyLimit > 0 and (monthlySpent + amountCents) > monthlyLimit then return cjson.encode({error = "monthly_limit"}) end
+if monthlyLimit ~= "0" then
+  local newMonthly = str_add(monthlySpent, spendAmount)
+  if not str_gte(monthlyLimit, newMonthly) then
+    return cjson.encode({error = "monthly_limit"})
+  end
+end
 
--- Update
-cache.usdcBalance = tostring(balance - amountCents)
-cache.dailySpent = tostring(dailySpent + amountCents)
-cache.monthlySpent = tostring(monthlySpent + amountCents)
-cache.lastUpdated = tonumber(ARGV[2])
+-- Update values using string arithmetic
+cache.usdcBalance = str_sub(balance, spendAmount)
+cache.dailySpent = str_add(dailySpent, spendAmount)
+cache.monthlySpent = str_add(monthlySpent, spendAmount)
+cache.lastUpdated = nowMs
 
 local updated = cjson.encode(cache)
 redis.call('SET', key, updated, 'EX', 300)

@@ -142,6 +142,7 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
         // Compute actual shares burned via balance snapshot
         uint256 sharesAfter = IMorphoVault(vault).balanceOf(avatar);
         sharesBurned = sharesBefore - sharesAfter;
+        if (sharesBurned == 0) revert ZeroAmount();
 
         emit MorphoWithdraw(vault, assets, sharesBurned);
     }

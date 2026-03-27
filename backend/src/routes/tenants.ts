@@ -4,6 +4,7 @@ import type { Response } from "express";
 import type { PrismaClient } from "@prisma/client";
 import { CreateTenantSchema, UpdateTenantSchema } from "../types/index.js";
 import type { AuthenticatedRequest } from "../middleware/auth.js";
+import { validateWebhookUrl } from "../services/webhook-dispatcher.js";
 
 // ============ Types ============
 
@@ -62,6 +63,21 @@ export function createTenantsRouter(deps: TenantsDeps): Router {
       }
 
       const { name, custodyModel, webhookUrl, rateLimit } = parsed.data;
+
+      // Validate webhook URL against SSRF before persisting
+      if (webhookUrl) {
+        try {
+          await validateWebhookUrl(webhookUrl);
+        } catch (err) {
+          res.status(400).json({
+            error: "Invalid webhook URL",
+            details:
+              err instanceof Error ? err.message : "URL validation failed",
+          });
+          return;
+        }
+      }
+
       const { raw, hash } = generateApiKey();
 
       const tenant = await prisma.tenant.create({
@@ -165,6 +181,20 @@ export function createTenantsRouter(deps: TenantsDeps): Router {
 
       const updateData: Record<string, unknown> = {};
       const { webhookUrl, rateLimit, status } = parsed.data;
+
+      // Validate webhook URL against SSRF before persisting
+      if (webhookUrl) {
+        try {
+          await validateWebhookUrl(webhookUrl);
+        } catch (err) {
+          res.status(400).json({
+            error: "Invalid webhook URL",
+            details:
+              err instanceof Error ? err.message : "URL validation failed",
+          });
+          return;
+        }
+      }
 
       if (webhookUrl !== undefined) updateData.webhookUrl = webhookUrl;
       if (rateLimit !== undefined) updateData.rateLimit = rateLimit;

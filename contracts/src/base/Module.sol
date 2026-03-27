@@ -38,14 +38,14 @@ abstract contract Module {
         emit OwnershipTransferred(address(0), _owner);
     }
 
-    function setAvatar(address _avatar) public onlyOwner {
+    function setAvatar(address _avatar) external onlyOwner {
         if (_avatar == address(0)) revert InvalidAddress();
         address prev = avatar;
         avatar = _avatar;
         emit AvatarSet(prev, _avatar);
     }
 
-    function setTarget(address _target) public onlyOwner {
+    function setTarget(address _target) external onlyOwner {
         if (_target == address(0)) revert InvalidAddress();
         address prev = target;
         target = _target;

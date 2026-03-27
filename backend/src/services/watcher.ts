@@ -3,7 +3,7 @@ import type { PrismaClient } from "@prisma/client";
 import type { Redis } from "ioredis";
 import type { Config } from "../config/index.js";
 import { ERC20_ABI, SPEND_SETTLER_ABI } from "../lib/blockchain.js";
-import { setAuthCache } from "../lib/redis.js";
+import { setAuthCache, getAuthCache } from "../lib/redis.js";
 import type { AuthorizationCache } from "../types/index.js";
 
 // ============ Types ============
@@ -405,16 +405,19 @@ export class Watcher {
         args: [user.m2SafeAddress as `0x${string}`],
       })) as bigint;
 
-      // Build a fresh cache entry (daily/monthly spend stay as-is from existing cache)
+      // Preserve existing cache values for spend tracking
+      const existingCache = await getAuthCache(this.redis, user.eoaAddress);
+
       const cache: AuthorizationCache = {
         eoaAddress: user.eoaAddress,
         m2SafeAddress: user.m2SafeAddress,
         tenantId: user.tenantId,
         usdcBalance: balance.toString(),
-        dailySpent: "0",
-        dailyLimit: "0",
-        monthlySpent: "0",
-        monthlyLimit: "0",
+        // Preserve spend tracking and limits from existing cache
+        dailySpent: existingCache?.dailySpent ?? "0",
+        dailyLimit: existingCache?.dailyLimit ?? "0",
+        monthlySpent: existingCache?.monthlySpent ?? "0",
+        monthlyLimit: existingCache?.monthlyLimit ?? "0",
         lastUpdated: Date.now(),
       };
 
@@ -470,7 +473,6 @@ export class Watcher {
           })) as bigint;
 
           // Get existing cache to preserve spend tracking
-          const { getAuthCache } = await import("../lib/redis.js");
           const existing = await getAuthCache(this.redis, user.eoaAddress);
 
           const cache: AuthorizationCache = {

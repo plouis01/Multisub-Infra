@@ -3,18 +3,17 @@ pragma solidity ^0.8.20;
 
 import {ISafe} from "../../src/interfaces/ISafe.sol";
 
-/// @notice Minimal Safe mock that executes module transactions by forwarding calls.
-contract MockSafe {
+/// @notice Safe singleton mock for EIP-1167 clone testing. Supports setup() initialization
+///         and module management. When cloned, the constructor does not run — setup() is
+///         used instead to configure owners and threshold.
+contract MockSafeSingleton {
     mapping(address => bool) public enabledModules;
     address[] public owners;
     uint256 public threshold;
+    bool private _initialized;
 
     event ExecutedFromModule(address indexed module, address to, uint256 value, bytes data);
-
-    constructor() {
-        owners.push(msg.sender);
-        threshold = 1;
-    }
+    event SafeSetup(address indexed initiator, address[] owners, uint256 threshold);
 
     function setup(
         address[] calldata _owners,
@@ -26,12 +25,17 @@ contract MockSafe {
         uint256,
         address payable
     ) external {
-        // Allow re-setup in tests for flexibility
-        delete owners;
+        require(!_initialized, "Already initialized");
+        require(_owners.length > 0, "No owners");
+        require(_threshold > 0 && _threshold <= _owners.length, "Invalid threshold");
+
         for (uint256 i = 0; i < _owners.length; i++) {
             owners.push(_owners[i]);
         }
         threshold = _threshold;
+        _initialized = true;
+
+        emit SafeSetup(msg.sender, _owners, _threshold);
     }
 
     function enableModule(address module) external {

@@ -1,0 +1,267 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {Module} from "./base/Module.sol";
+import {ISafe} from "./interfaces/ISafe.sol";
+import {IERC20} from "./interfaces/IERC20.sol";
+import {IMorphoVault} from "./interfaces/IMorphoVault.sol";
+import {ITreasuryVault} from "./interfaces/ITreasuryVault.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+
+/// @title TreasuryVault
+/// @notice ERC-4626 per-tenant share accounting wrapper for the M1 Treasury Safe.
+///         Tracks each tenant's share of an underlying Morpho vault position.
+/// @dev NOT a standalone ERC-4626 vault. This is a module attached to the M1 Safe
+///      that deposits/withdraws through the Safe and maintains per-tenant accounting
+///      of the resulting vault shares. Yield is calculated as the difference between
+///      current share value and total deposited amount.
+contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
+    // ============ State ============
+
+    /// @notice Authorized yield manager service address
+    address public override operator;
+
+    /// @notice The Morpho vault where USDC is deposited
+    address public override morphoVault;
+
+    /// @notice USDC token address
+    address public override usdc;
+
+    /// @notice Per-tenant position tracking
+    mapping(bytes32 => TenantPosition) private _tenantPositions;
+
+    /// @notice Total shares across all tenants (for accounting validation)
+    uint256 public totalTenantShares;
+
+    /// @notice Total USDC deposited across all tenants
+    uint256 public totalDeposited;
+
+    // ============ Errors ============
+
+    error OnlyOperator();
+    error OnlyOperatorOrOwner();
+    error InvalidOperator();
+    error InvalidMorphoVault();
+    error InvalidUsdcAddress();
+    error ZeroAmount();
+    error ZeroTenantId();
+    error InsufficientShares(bytes32 tenantId, uint256 requested, uint256 available);
+    error InsufficientDeposited(bytes32 tenantId, uint256 requested, uint256 available);
+    error ExecutionFailed();
+
+    // ============ Events ============
+
+    event EmergencyPaused(address indexed by);
+    event EmergencyUnpaused(address indexed by);
+
+    // ============ Modifiers ============
+
+    modifier onlyOperator() {
+        if (msg.sender != operator) revert OnlyOperator();
+        _;
+    }
+
+    modifier onlyOperatorOrOwner() {
+        if (msg.sender != operator && msg.sender != owner) revert OnlyOperatorOrOwner();
+        _;
+    }
+
+    // ============ Constructor ============
+
+    /// @param _avatar The M1 Safe address this module is attached to
+    /// @param _owner Owner (typically the M1 Safe or admin multisig)
+    /// @param _operator Address of the yield manager service backend
+    /// @param _morphoVault The Morpho vault address for USDC deposits
+    /// @param _usdc USDC token contract address
+    constructor(address _avatar, address _owner, address _operator, address _morphoVault, address _usdc)
+        Module(_avatar, _avatar, _owner)
+    {
+        if (_operator == address(0)) revert InvalidOperator();
+        if (_morphoVault == address(0)) revert InvalidMorphoVault();
+        if (_usdc == address(0)) revert InvalidUsdcAddress();
+
+        operator = _operator;
+        morphoVault = _morphoVault;
+        usdc = _usdc;
+
+        emit OperatorUpdated(address(0), _operator);
+        emit MorphoVaultUpdated(address(0), _morphoVault);
+    }
+
+    // ============ Emergency Controls ============
+
+    function pause() external onlyOwner {
+        _pause();
+        emit EmergencyPaused(msg.sender);
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+        emit EmergencyUnpaused(msg.sender);
+    }
+
+    // ============ Core Operations ============
+
+    /// @notice Deposit USDC into the Morpho vault on behalf of a tenant
+    /// @param tenantId The tenant identifier
+    /// @param usdcAmount Amount of USDC to deposit
+    /// @return shares Amount of Morpho vault shares minted for this tenant
+    function depositForTenant(bytes32 tenantId, uint256 usdcAmount)
+        external
+        override
+        onlyOperator
+        nonReentrant
+        whenNotPaused
+        returns (uint256 shares)
+    {
+        if (tenantId == bytes32(0)) revert ZeroTenantId();
+        if (usdcAmount == 0) revert ZeroAmount();
+
+        // Step 1: Approve the Morpho vault to spend USDC from the Safe
+        bytes memory approveData = abi.encodeWithSelector(IERC20.approve.selector, morphoVault, usdcAmount);
+        bool approveSuccess = exec(usdc, 0, approveData, ISafe.Operation.Call);
+        if (!approveSuccess) revert ExecutionFailed();
+
+        // Step 2: Deposit USDC into Morpho vault with Safe as receiver
+        bytes memory depositData = abi.encodeWithSelector(IMorphoVault.deposit.selector, usdcAmount, avatar);
+        bool depositSuccess = exec(morphoVault, 0, depositData, ISafe.Operation.Call);
+        if (!depositSuccess) revert ExecutionFailed();
+
+        // Calculate shares minted (using convertToShares as approximation)
+        shares = IMorphoVault(morphoVault).convertToShares(usdcAmount);
+
+        // Update tenant position
+        TenantPosition storage pos = _tenantPositions[tenantId];
+        pos.shares += shares;
+        pos.depositedAmount += usdcAmount;
+
+        // Update global totals
+        totalTenantShares += shares;
+        totalDeposited += usdcAmount;
+
+        emit TenantDeposit(tenantId, usdcAmount, shares);
+    }
+
+    /// @notice Withdraw USDC from the Morpho vault on behalf of a tenant
+    /// @param tenantId The tenant identifier
+    /// @param usdcAmount Amount of USDC to withdraw
+    /// @return sharesBurned Amount of Morpho vault shares burned for this tenant
+    function withdrawForTenant(bytes32 tenantId, uint256 usdcAmount)
+        external
+        override
+        onlyOperator
+        nonReentrant
+        whenNotPaused
+        returns (uint256 sharesBurned)
+    {
+        if (tenantId == bytes32(0)) revert ZeroTenantId();
+        if (usdcAmount == 0) revert ZeroAmount();
+
+        TenantPosition storage pos = _tenantPositions[tenantId];
+
+        // Calculate shares needed for this withdrawal
+        sharesBurned = IMorphoVault(morphoVault).convertToShares(usdcAmount);
+        if (sharesBurned > pos.shares) {
+            revert InsufficientShares(tenantId, sharesBurned, pos.shares);
+        }
+
+        // Withdraw from Morpho vault — receiver and owner are both the Safe (avatar)
+        bytes memory withdrawData = abi.encodeWithSelector(IMorphoVault.withdraw.selector, usdcAmount, avatar, avatar);
+        bool success = exec(morphoVault, 0, withdrawData, ISafe.Operation.Call);
+        if (!success) revert ExecutionFailed();
+
+        // Update tenant position
+        pos.shares -= sharesBurned;
+
+        // Reduce deposited proportionally: if withdrawing more than deposited, cap at deposited
+        uint256 depositReduction = usdcAmount > pos.depositedAmount ? pos.depositedAmount : usdcAmount;
+        pos.depositedAmount -= depositReduction;
+
+        // Update global totals
+        totalTenantShares -= sharesBurned;
+        totalDeposited -= depositReduction;
+
+        emit TenantWithdraw(tenantId, usdcAmount, sharesBurned);
+    }
+
+    // ============ Yield Functions ============
+
+    /// @notice Calculate unrealized yield for a tenant
+    /// @param tenantId The tenant identifier
+    /// @return yield_ The yield amount in USDC (can be 0 if no yield yet)
+    function getYieldForTenant(bytes32 tenantId) external view override returns (uint256 yield_) {
+        TenantPosition storage pos = _tenantPositions[tenantId];
+        if (pos.shares == 0) return 0;
+
+        // Current value of tenant's shares in USDC
+        uint256 currentValue = IMorphoVault(morphoVault).convertToAssets(pos.shares);
+
+        // Yield = current value - deposited amount
+        if (currentValue > pos.depositedAmount) {
+            yield_ = currentValue - pos.depositedAmount;
+        }
+    }
+
+    /// @notice Record yield snapshots for a list of tenants
+    /// @dev Called every 4h by the yield manager service
+    /// @param tenantIds Array of tenant identifiers to snapshot
+    function snapshotYield(bytes32[] calldata tenantIds) external override onlyOperatorOrOwner whenNotPaused {
+        for (uint256 i = 0; i < tenantIds.length; i++) {
+            bytes32 tenantId = tenantIds[i];
+            TenantPosition storage pos = _tenantPositions[tenantId];
+
+            if (pos.shares == 0) continue;
+
+            uint256 currentValue = IMorphoVault(morphoVault).convertToAssets(pos.shares);
+            uint256 yieldAmount = 0;
+            if (currentValue > pos.depositedAmount) {
+                yieldAmount = currentValue - pos.depositedAmount;
+            }
+
+            pos.lastSnapshotYield = yieldAmount;
+            pos.lastSnapshotTime = block.timestamp;
+
+            emit YieldSnapshot(tenantId, yieldAmount, block.timestamp);
+        }
+
+        emit GlobalYieldSnapshot(tenantIds.length, block.timestamp);
+    }
+
+    // ============ Admin Functions ============
+
+    /// @notice Update the operator (yield manager service) address
+    /// @param newOperator The new operator address
+    function setOperator(address newOperator) external onlyOwner {
+        if (newOperator == address(0)) revert InvalidOperator();
+        address oldOperator = operator;
+        operator = newOperator;
+        emit OperatorUpdated(oldOperator, newOperator);
+    }
+
+    /// @notice Update the Morpho vault address
+    /// @param newVault The new Morpho vault address
+    function setMorphoVault(address newVault) external onlyOwner {
+        if (newVault == address(0)) revert InvalidMorphoVault();
+        address oldVault = morphoVault;
+        morphoVault = newVault;
+        emit MorphoVaultUpdated(oldVault, newVault);
+    }
+
+    // ============ View Functions ============
+
+    /// @notice Get the full position details for a tenant
+    function getTenantPosition(bytes32 tenantId) external view override returns (TenantPosition memory) {
+        return _tenantPositions[tenantId];
+    }
+
+    /// @notice Get the share balance for a tenant
+    function getTenantShares(bytes32 tenantId) external view override returns (uint256) {
+        return _tenantPositions[tenantId].shares;
+    }
+
+    /// @notice Get the total deposited amount for a tenant
+    function getTenantDeposited(bytes32 tenantId) external view override returns (uint256) {
+        return _tenantPositions[tenantId].depositedAmount;
+    }
+}

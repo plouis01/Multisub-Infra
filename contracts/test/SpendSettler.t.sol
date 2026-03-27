@@ -331,7 +331,7 @@ contract SpendSettlerTest is Test {
     function test_settle_revertsWhenModuleDisabled() public {
         safe.disableModule(address(0), address(settler));
 
-        vm.expectRevert(); // Safe reverts with "Module not enabled"
+        vm.expectRevert(SpendSettler.TransferFailed.selector);
         vm.prank(settlerEOA);
         settler.settle(100e6, keccak256("tx-001"));
     }

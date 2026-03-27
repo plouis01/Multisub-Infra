@@ -56,33 +56,55 @@ export async function updateAuthCacheSpend(
   redis: RedisType,
   eoaAddress: string,
   amountCents: number,
-): Promise<AuthorizationCache | null> {
+): Promise<{ cache: AuthorizationCache | null; error?: string }> {
   const key = `${KEY_PREFIX.AUTH}${eoaAddress.toLowerCase()}`;
 
-  // Atomic read-modify-write via WATCH/MULTI/EXEC
+  // Atomic read-validate-write via WATCH/MULTI/EXEC
+  // Mirrors the Lua script checks: balance, daily limit, monthly limit
   const result = await redis.watch(key).then(async () => {
     const raw = await redis.get(key);
     if (!raw) {
       await redis.unwatch();
-      return null;
+      return { cache: null };
     }
 
     const cache = JSON.parse(raw) as AuthorizationCache;
-    const newDailySpent = BigInt(cache.dailySpent) + BigInt(amountCents);
-    const newMonthlySpent = BigInt(cache.monthlySpent) + BigInt(amountCents);
-    const newBalance = BigInt(cache.usdcBalance) - BigInt(amountCents);
+    const balance = BigInt(cache.usdcBalance);
+    const dailySpent = BigInt(cache.dailySpent);
+    const monthlySpent = BigInt(cache.monthlySpent);
+    const dailyLimit = BigInt(cache.dailyLimit);
+    const monthlyLimit = BigInt(cache.monthlyLimit);
+    const spend = BigInt(amountCents);
 
-    cache.dailySpent = newDailySpent.toString();
-    cache.monthlySpent = newMonthlySpent.toString();
-    cache.usdcBalance = newBalance.toString();
+    // Validate balance
+    if (balance < spend) {
+      await redis.unwatch();
+      return { cache: null, error: "insufficient_balance" };
+    }
+
+    // Validate daily limit (0 = unlimited)
+    if (dailyLimit > 0n && dailySpent + spend > dailyLimit) {
+      await redis.unwatch();
+      return { cache: null, error: "daily_limit" };
+    }
+
+    // Validate monthly limit (0 = unlimited)
+    if (monthlyLimit > 0n && monthlySpent + spend > monthlyLimit) {
+      await redis.unwatch();
+      return { cache: null, error: "monthly_limit" };
+    }
+
+    cache.dailySpent = (dailySpent + spend).toString();
+    cache.monthlySpent = (monthlySpent + spend).toString();
+    cache.usdcBalance = (balance - spend).toString();
     cache.lastUpdated = Date.now();
 
     const pipeline = redis.multi();
     pipeline.set(key, JSON.stringify(cache), "EX", 300);
     const execResult = await pipeline.exec();
 
-    if (!execResult) return null; // Transaction failed (concurrent modification)
-    return cache;
+    if (!execResult) return { cache: null }; // Transaction failed (concurrent modification)
+    return { cache };
   });
 
   return result;

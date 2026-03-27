@@ -75,9 +75,11 @@ export function createWebhooksRouter(deps: WebhooksDeps): Router {
       const alreadyProcessed = await redis.get(dedupeKey);
       if (alreadyProcessed) {
         console.warn(
-          `[Webhooks] Duplicate webhook token ${event.token} — skipping`,
+          `[Webhooks] Duplicate webhook token ${event.token} — returning cached result: ${alreadyProcessed}`,
         );
-        res.json({ result: "APPROVED" } as LithicASAResponse); // Return last known result
+        const cachedResult =
+          alreadyProcessed === "APPROVED" ? "APPROVED" : "DECLINED";
+        res.json({ result: cachedResult } as LithicASAResponse);
         return;
       }
 

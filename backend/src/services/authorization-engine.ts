@@ -128,20 +128,23 @@ export class AuthorizationEngine {
         );
       }
 
-      // ── Step 5: Daily limit check ──
+      // ── Step 5: Daily limit check (0 = unlimited, matching Lua script behavior) ──
       const dailySpent = BigInt(authCache.dailySpent);
       const dailyLimit = BigInt(authCache.dailyLimit);
-      if (dailySpent + BigInt(amountCents) > dailyLimit) {
+      if (dailyLimit > 0n && dailySpent + BigInt(amountCents) > dailyLimit) {
         return this.decline(
           `Daily limit exceeded: ${dailySpent} + ${amountCents} > ${dailyLimit}`,
           startTime,
         );
       }
 
-      // ── Step 6: Monthly limit check ──
+      // ── Step 6: Monthly limit check (0 = unlimited, matching Lua script behavior) ──
       const monthlySpent = BigInt(authCache.monthlySpent);
       const monthlyLimit = BigInt(authCache.monthlyLimit);
-      if (monthlySpent + BigInt(amountCents) > monthlyLimit) {
+      if (
+        monthlyLimit > 0n &&
+        monthlySpent + BigInt(amountCents) > monthlyLimit
+      ) {
         return this.decline(
           `Monthly limit exceeded: ${monthlySpent} + ${amountCents} > ${monthlyLimit}`,
           startTime,
@@ -421,14 +424,19 @@ export class AuthorizationEngine {
 
     // Lua returned null (cache miss) — fall back to WATCH/MULTI/EXEC with retries
     for (let attempt = 0; attempt < MAX_ATOMIC_RETRIES; attempt++) {
-      const result = await updateAuthCacheSpend(
+      const fallback = await updateAuthCacheSpend(
         this.redis,
         eoaAddress,
         amountCents,
       );
 
-      if (result !== null) {
-        return result;
+      // Fallback also validates limits now — propagate errors
+      if (fallback.error) {
+        return null;
+      }
+
+      if (fallback.cache) {
+        return fallback.cache;
       }
 
       // Brief backoff before retry to reduce contention.

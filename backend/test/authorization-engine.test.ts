@@ -96,8 +96,8 @@ describe("AuthorizationEngine", () => {
     // atomicAuthSpend is the primary path (Lua script)
     mockAtomicAuthSpend.mockResolvedValue({ cache: updatedDefaultCache });
 
-    // updateAuthCacheSpend is the fallback path (WATCH/MULTI/EXEC)
-    mockUpdateAuthCacheSpend.mockResolvedValue(updatedDefaultCache);
+    // updateAuthCacheSpend is the fallback path (WATCH/MULTI/EXEC) — now returns { cache, error? }
+    mockUpdateAuthCacheSpend.mockResolvedValue({ cache: updatedDefaultCache });
 
     // KYC check returns approved
     prisma.user.findUnique.mockResolvedValue({ kycStatus: "approved" });
@@ -512,11 +512,11 @@ describe("AuthorizationEngine", () => {
     // Lua script returns cache miss, falls back to WATCH/MULTI/EXEC
     mockAtomicAuthSpend.mockResolvedValue({ cache: null });
 
-    // First two fallback attempts fail, third succeeds
+    // First two fallback attempts fail (transaction contention), third succeeds
     mockUpdateAuthCacheSpend
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(updatedCache);
+      .mockResolvedValueOnce({ cache: null })
+      .mockResolvedValueOnce({ cache: null })
+      .mockResolvedValueOnce({ cache: updatedCache });
 
     const result = await engine.authorize(defaultEvent);
 

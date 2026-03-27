@@ -155,13 +155,15 @@ describe("Redis helper functions", () => {
         eoaAddress: "0xspender",
         usdcBalance: "100000",
         dailySpent: "5000",
+        dailyLimit: "500000",
         monthlySpent: "20000",
+        monthlyLimit: "5000000",
       });
 
       // Pre-populate
       redis._store.set("auth:0xspender", JSON.stringify(cache));
 
-      const result = await updateAuthCacheSpend(
+      const { cache: result } = await updateAuthCacheSpend(
         redis as any,
         "0xSPENDER",
         1500,
@@ -174,19 +176,83 @@ describe("Redis helper functions", () => {
       expect(result!.lastUpdated).toBeGreaterThan(0);
     });
 
-    it("returns null when cache key does not exist", async () => {
-      const result = await updateAuthCacheSpend(
+    it("returns null cache when key does not exist", async () => {
+      const { cache, error } = await updateAuthCacheSpend(
         redis as any,
         "0xnonexistent",
         1000,
       );
 
-      expect(result).toBeNull();
+      expect(cache).toBeNull();
+      expect(error).toBeUndefined();
       expect(redis.unwatch).toHaveBeenCalled();
     });
 
+    it("returns error when insufficient balance", async () => {
+      const cache = createTestAuthCache({
+        eoaAddress: "0xpoor",
+        usdcBalance: "500",
+        dailyLimit: "0",
+        monthlyLimit: "0",
+      });
+      redis._store.set("auth:0xpoor", JSON.stringify(cache));
+
+      const { cache: result, error } = await updateAuthCacheSpend(
+        redis as any,
+        "0xPOOR",
+        1000,
+      );
+
+      expect(result).toBeNull();
+      expect(error).toBe("insufficient_balance");
+    });
+
+    it("returns error when daily limit exceeded", async () => {
+      const cache = createTestAuthCache({
+        eoaAddress: "0xlimited",
+        usdcBalance: "100000",
+        dailySpent: "9000",
+        dailyLimit: "10000",
+        monthlyLimit: "0",
+      });
+      redis._store.set("auth:0xlimited", JSON.stringify(cache));
+
+      const { cache: result, error } = await updateAuthCacheSpend(
+        redis as any,
+        "0xLIMITED",
+        2000,
+      );
+
+      expect(result).toBeNull();
+      expect(error).toBe("daily_limit");
+    });
+
+    it("skips limit check when limit is 0 (unlimited)", async () => {
+      const cache = createTestAuthCache({
+        eoaAddress: "0xunlimited",
+        usdcBalance: "100000",
+        dailySpent: "99999",
+        dailyLimit: "0",
+        monthlyLimit: "0",
+      });
+      redis._store.set("auth:0xunlimited", JSON.stringify(cache));
+
+      const { cache: result } = await updateAuthCacheSpend(
+        redis as any,
+        "0xUNLIMITED",
+        1000,
+      );
+
+      expect(result).not.toBeNull();
+      expect(result!.usdcBalance).toBe("99000");
+    });
+
     it("calls watch on the correct key", async () => {
-      const cache = createTestAuthCache({ eoaAddress: "0xwatched" });
+      const cache = createTestAuthCache({
+        eoaAddress: "0xwatched",
+        dailyLimit: "0",
+        monthlyLimit: "0",
+      });
       redis._store.set("auth:0xwatched", JSON.stringify(cache));
 
       await updateAuthCacheSpend(redis as any, "0xWATCHED", 500);
@@ -195,7 +261,11 @@ describe("Redis helper functions", () => {
     });
 
     it("uses multi/exec for transactional update", async () => {
-      const cache = createTestAuthCache({ eoaAddress: "0xatomic" });
+      const cache = createTestAuthCache({
+        eoaAddress: "0xatomic",
+        dailyLimit: "0",
+        monthlyLimit: "0",
+      });
       redis._store.set("auth:0xatomic", JSON.stringify(cache));
 
       await updateAuthCacheSpend(redis as any, "0xATOMIC", 1000);
@@ -203,8 +273,12 @@ describe("Redis helper functions", () => {
       expect(redis.multi).toHaveBeenCalled();
     });
 
-    it("returns null when WATCH/MULTI/EXEC transaction fails", async () => {
-      const cache = createTestAuthCache({ eoaAddress: "0xcontended" });
+    it("returns null cache when WATCH/MULTI/EXEC transaction fails", async () => {
+      const cache = createTestAuthCache({
+        eoaAddress: "0xcontended",
+        dailyLimit: "0",
+        monthlyLimit: "0",
+      });
       redis._store.set("auth:0xcontended", JSON.stringify(cache));
 
       // Override multi to simulate exec returning null (transaction aborted)
@@ -213,7 +287,7 @@ describe("Redis helper functions", () => {
         exec: vi.fn().mockResolvedValue(null),
       });
 
-      const result = await updateAuthCacheSpend(
+      const { cache: result } = await updateAuthCacheSpend(
         redis as any,
         "0xCONTENDED",
         1000,

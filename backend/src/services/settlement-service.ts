@@ -143,6 +143,13 @@ export class SettlementService {
     try {
       // 1. Idempotency check — skip if already settled on-chain
       const alreadySettled = await this.checkIfSettled(lithicTxToken);
+      if (alreadySettled === null) {
+        // RPC error — re-enqueue for retry rather than risk double-settlement
+        console.warn(
+          `[Settlement] isSettled() RPC failed for ${lithicTxToken} — re-enqueuing for retry`,
+        );
+        throw new Error("isSettled RPC check failed — will retry");
+      }
       if (alreadySettled) {
         console.log(
           `[Settlement] lithicTxToken=${lithicTxToken} already settled on-chain — skipping`,
@@ -216,7 +223,7 @@ export class SettlementService {
 
   // ============ On-chain interactions ============
 
-  private async checkIfSettled(lithicTxToken: string): Promise<boolean> {
+  private async checkIfSettled(lithicTxToken: string): Promise<boolean | null> {
     try {
       const result = await this.publicClient.readContract({
         address: this.config.spendSettlerAddress as `0x${string}`,
@@ -227,10 +234,10 @@ export class SettlementService {
       return result as boolean;
     } catch (err) {
       console.error(
-        `[Settlement] isSettled() check failed for ${lithicTxToken}`,
+        `[Settlement] isSettled() check failed for ${lithicTxToken} — will retry job`,
         err,
       );
-      return false;
+      return null; // Unknown — caller should retry rather than assume not-settled
     }
   }
 

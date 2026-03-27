@@ -9,6 +9,8 @@ import { AuthorizationEngine } from "./services/authorization-engine.js";
 import { SettlementService } from "./services/settlement-service.js";
 import { Watcher } from "./services/watcher.js";
 import { WebhookDispatcher } from "./services/webhook-dispatcher.js";
+import { YieldManager } from "./services/yield-manager.js";
+import { SweepService } from "./services/sweep-service.js";
 import { LithicClient, MockLithicClient } from "./integrations/lithic.js";
 import { requireAuth } from "./middleware/auth.js";
 import { rateLimit } from "./middleware/rate-limit.js";
@@ -16,6 +18,9 @@ import { createHealthRouter } from "./routes/health.js";
 import { createUsersRouter } from "./routes/users.js";
 import { createCardsRouter } from "./routes/cards.js";
 import { createWebhooksRouter } from "./routes/webhooks.js";
+import { createTenantsRouter } from "./routes/tenants.js";
+import { createTransactionsRouter } from "./routes/transactions.js";
+import { createYieldRouter } from "./routes/yield.js";
 
 // ============ Main ============
 
@@ -104,6 +109,28 @@ async function main(): Promise<void> {
   watcher.start();
   console.log("[Server] Watcher started");
 
+  let yieldManager: YieldManager | null = null;
+  let sweepService: SweepService | null = null;
+  if (walletClient) {
+    sweepService = new SweepService(config, publicClient, walletClient, prisma);
+    sweepService.start();
+    console.log("[Server] SweepService started");
+
+    yieldManager = new YieldManager(
+      config,
+      publicClient,
+      walletClient,
+      prisma,
+      redis,
+    );
+    yieldManager.start();
+    console.log("[Server] YieldManager started");
+  } else {
+    console.warn(
+      "[Server] SweepService + YieldManager skipped — no wallet key configured",
+    );
+  }
+
   // ── Create Express App ──
   const app = express();
 
@@ -145,11 +172,20 @@ async function main(): Promise<void> {
   // Apply auth and rate limit as app-level middleware for /v1 paths
   const usersRouter = createUsersRouter({ prisma });
   const cardsRouter = createCardsRouter({ prisma, lithicClient, redis });
+  const transactionsRouter = createTransactionsRouter({ prisma });
+  const yieldRouter = createYieldRouter({ prisma });
+  const tenantsRouter = createTenantsRouter({
+    prisma,
+    adminTenantId: process.env.ADMIN_TENANT_ID ?? "",
+  });
 
   app.use("/v1", authMiddleware as express.RequestHandler);
   app.use("/v1", rateLimitMiddleware as express.RequestHandler);
   app.use(usersRouter);
   app.use(cardsRouter);
+  app.use(transactionsRouter);
+  app.use(yieldRouter);
+  app.use(tenantsRouter);
 
   // ── 404 Handler ──
   app.use((_req, res) => {
@@ -187,6 +223,12 @@ async function main(): Promise<void> {
     watcher.stop();
     if (settlementService) {
       settlementService.stop();
+    }
+    if (sweepService) {
+      sweepService.stop();
+    }
+    if (yieldManager) {
+      yieldManager.stop();
     }
 
     // Disconnect clients

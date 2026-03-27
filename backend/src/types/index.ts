@@ -127,3 +127,36 @@ export interface LithicASAEvent {
 export type LithicASAResponse = {
   result: "APPROVED" | "DECLINED";
 };
+
+// ============ Pagination Schema ============
+
+export const PaginationSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+// ============ Tenant Schemas ============
+
+export const CreateTenantSchema = z.object({
+  name: z.string().min(1).max(255),
+  custodyModel: z.enum(["MODEL_A", "MODEL_B"]).default("MODEL_A"),
+  webhookUrl: z.string().url().optional(),
+  rateLimit: z.number().int().min(10).max(100_000).default(1000),
+});
+
+export const UpdateTenantSchema = z.object({
+  webhookUrl: z.string().url().nullable().optional(),
+  rateLimit: z.number().int().min(10).max(100_000).optional(),
+  status: z.enum(["active", "suspended", "disabled"]).optional(),
+});
+
+// ============ Transaction Query Schema ============
+
+export const TransactionQuerySchema = PaginationSchema.extend({
+  status: z
+    .enum(["pending", "approved", "declined", "settled", "reversed", "failed"])
+    .optional(),
+  type: z
+    .enum(["authorization", "settlement", "reversal", "deposit", "withdrawal"])
+    .optional(),
+});

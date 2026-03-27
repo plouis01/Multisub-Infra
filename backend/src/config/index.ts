@@ -39,6 +39,15 @@ const ConfigSchema = z.object({
   // Settlement
   settlementMaxRetries: z.coerce.number().default(3),
   settlementGasBumpPercent: z.coerce.number().default(20),
+
+  // Sweep
+  sweepIntervalMs: z.coerce.number().default(900_000), // 15 min
+  sweepThreshold: z.string().default("100000000"), // $100 USDC (6-decimal)
+
+  // Yield
+  yieldSnapshotIntervalMs: z.coerce.number().default(14_400_000), // 4 hours
+  morphoVaultAddress: z.string().default(""),
+  treasuryVaultAddress: z.string().default(""),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -65,5 +74,10 @@ export function loadConfig(): Config {
     watcherStartBlock: process.env.WATCHER_START_BLOCK,
     settlementMaxRetries: process.env.SETTLEMENT_MAX_RETRIES,
     settlementGasBumpPercent: process.env.SETTLEMENT_GAS_BUMP_PERCENT,
+    sweepIntervalMs: process.env.SWEEP_INTERVAL_MS,
+    sweepThreshold: process.env.SWEEP_THRESHOLD,
+    yieldSnapshotIntervalMs: process.env.YIELD_SNAPSHOT_INTERVAL_MS,
+    morphoVaultAddress: process.env.MORPHO_VAULT_ADDRESS,
+    treasuryVaultAddress: process.env.TREASURY_VAULT_ADDRESS,
   });
 }

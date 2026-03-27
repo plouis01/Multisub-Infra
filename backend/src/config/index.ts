@@ -55,6 +55,11 @@ const ConfigSchema = z.object({
   morphoVaultAddress: z.string().default(""),
   treasuryVaultAddress: z.string().default(""),
 
+  // Sumsub KYC
+  sumsubAppToken: z.string().default(""),
+  sumsubSecretKey: z.string().default(""),
+  sumsubLevelName: z.string().default("basic-kyc-level"),
+
   // Admin
   adminTenantId: z.string().min(1).default("__unset__"),
 });
@@ -88,6 +93,9 @@ export function loadConfig(): Config {
     yieldSnapshotIntervalMs: process.env.YIELD_SNAPSHOT_INTERVAL_MS,
     morphoVaultAddress: process.env.MORPHO_VAULT_ADDRESS,
     treasuryVaultAddress: process.env.TREASURY_VAULT_ADDRESS,
+    sumsubAppToken: process.env.SUMSUB_APP_TOKEN,
+    sumsubSecretKey: process.env.SUMSUB_SECRET_KEY,
+    sumsubLevelName: process.env.SUMSUB_LEVEL_NAME,
     adminTenantId: process.env.ADMIN_TENANT_ID,
   });
 }

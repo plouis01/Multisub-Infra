@@ -12,6 +12,7 @@ import { WebhookDispatcher } from "./services/webhook-dispatcher.js";
 import { YieldManager } from "./services/yield-manager.js";
 import { SweepService } from "./services/sweep-service.js";
 import { LithicClient, MockLithicClient } from "./integrations/lithic.js";
+import { SumsubClient, MockSumsubClient } from "./integrations/kyc.js";
 import { requireAuth } from "./middleware/auth.js";
 import { rateLimit, webhookRateLimit } from "./middleware/rate-limit.js";
 import { createHealthRouter } from "./routes/health.js";
@@ -22,6 +23,7 @@ import { createTenantsRouter } from "./routes/tenants.js";
 import { createTransactionsRouter } from "./routes/transactions.js";
 import { createYieldRouter } from "./routes/yield.js";
 import { createAdminRouter } from "./routes/admin.js";
+import { createKycRouter, createKycWebhookRouter } from "./routes/kyc.js";
 
 // ============ Main ============
 
@@ -75,6 +77,21 @@ async function main(): Promise<void> {
       config.lithicWebhookSecret || "dev-webhook-secret",
     );
     console.log("[Server] Using MockLithicClient (missing credentials)");
+  }
+
+  // ── Initialize Sumsub KYC Client ──
+  let sumsubClient: SumsubClient;
+  if (config.sumsubAppToken && config.sumsubSecretKey) {
+    sumsubClient = new SumsubClient(
+      config.sumsubAppToken,
+      config.sumsubSecretKey,
+    );
+    console.log("[Server] SumsubClient initialized");
+  } else {
+    sumsubClient = new MockSumsubClient(
+      config.sumsubSecretKey || "dev-sumsub-secret",
+    );
+    console.log("[Server] Using MockSumsubClient (missing credentials)");
   }
 
   // ── Initialize Services ──
@@ -179,6 +196,12 @@ async function main(): Promise<void> {
       platformIssuerSafeAddress: config.platformIssuerSafeAddress,
     }),
   );
+  app.use(
+    createKycWebhookRouter({
+      prisma,
+      sumsubClient,
+    }),
+  );
 
   // ── Auth + Rate Limit Middleware for API routes ──
   const authMiddleware = requireAuth(prisma);
@@ -202,6 +225,11 @@ async function main(): Promise<void> {
     config,
     adminTenantId: config.adminTenantId,
   });
+  const kycRouter = createKycRouter({
+    prisma,
+    sumsubClient,
+    sumsubLevelName: config.sumsubLevelName,
+  });
 
   app.use("/v1", authMiddleware as express.RequestHandler);
   app.use("/v1", rateLimitMiddleware as express.RequestHandler);
@@ -211,6 +239,7 @@ async function main(): Promise<void> {
   app.use(yieldRouter);
   app.use(tenantsRouter);
   app.use(adminRouter);
+  app.use(kycRouter);
 
   // ── 404 Handler ──
   app.use((_req, res) => {

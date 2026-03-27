@@ -1,0 +1,1511 @@
+openapi: 3.0.3
+info:
+  title: MultiSubs BaaS API
+  description: |
+    Multi-tenant Banking-as-a-Service backend for card authorization,
+    settlement, yield management, and on-chain treasury operations.
+  version: 0.1.0
+  contact:
+    name: MultiSubs Team
+
+servers:
+  - url: http://localhost:3000
+    description: Local development
+  - url: https://api.multisubs.io
+    description: Production
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: Health
+    description: Health check endpoint (no auth required)
+  - name: Webhooks
+    description: Webhook receivers (HMAC auth, not API key)
+  - name: Users
+    description: User management
+  - name: Cards
+    description: Card (sub-account) issuance and management
+  - name: Transactions
+    description: Transaction listing and details
+  - name: Yield
+    description: Yield tracking and snapshots
+  - name: Tenants
+    description: Tenant management (admin only)
+  - name: Admin
+    description: Platform administration dashboard (admin only)
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        SHA-256 hashed API key issued per tenant. Prefix: `msk_`.
+        In development, `X-Test-Tenant-Id` header may bypass key lookup.
+
+  parameters:
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+      description: Maximum number of items to return
+    OffsetParam:
+      name: offset
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      description: Number of items to skip
+
+  schemas:
+    # ---------- Error ----------
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: "Internal server error"
+
+    ValidationError:
+      type: object
+      required: [error, details]
+      properties:
+        error:
+          type: string
+          example: "Validation failed"
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              message:
+                type: string
+
+    # ---------- Health ----------
+    ComponentHealth:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        latencyMs:
+          type: integer
+          nullable: true
+        detail:
+          type: string
+          nullable: true
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        timestamp:
+          type: string
+          format: date-time
+        components:
+          type: object
+          properties:
+            database:
+              $ref: "#/components/schemas/ComponentHealth"
+            redis:
+              $ref: "#/components/schemas/ComponentHealth"
+            watcher:
+              $ref: "#/components/schemas/ComponentHealth"
+
+    # ---------- Users ----------
+    CreateUserRequest:
+      type: object
+      required: [externalId]
+      properties:
+        externalId:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: "user-12345"
+        email:
+          type: string
+          format: email
+          example: "user@example.com"
+        kycStatus:
+          type: string
+          enum: [pending, approved, rejected]
+          default: pending
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "clxyz123abc"
+        externalId:
+          type: string
+        email:
+          type: string
+          nullable: true
+        kycStatus:
+          type: string
+          enum: [pending, approved, rejected]
+        m2SafeAddress:
+          type: string
+          nullable: true
+          example: "0x1234...abcd"
+        eoaAddress:
+          type: string
+          nullable: true
+          example: "0xabcd...1234"
+        status:
+          type: string
+          enum: [active, frozen, closed]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    UserWithSubAccounts:
+      allOf:
+        - $ref: "#/components/schemas/User"
+        - type: object
+          properties:
+            subAccounts:
+              type: array
+              items:
+                $ref: "#/components/schemas/SubAccountSummary"
+
+    SubAccountSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [virtual, physical]
+        lithicCardToken:
+          type: string
+          nullable: true
+        dailyLimit:
+          type: string
+          description: BigInt as string (cents)
+        monthlyLimit:
+          type: string
+          description: BigInt as string (cents)
+        status:
+          type: string
+          enum: [active, frozen, cancelled]
+        createdAt:
+          type: string
+          format: date-time
+
+    BalanceResponse:
+      type: object
+      properties:
+        userId:
+          type: string
+        token:
+          type: string
+          example: "USDC"
+        balance:
+          type: string
+          description: "6-decimal USDC string"
+          example: "1000000000"
+        dailySpent:
+          type: string
+          example: "50000"
+        monthlySpent:
+          type: string
+          example: "200000"
+
+    # ---------- Cards ----------
+    IssueCardRequest:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [virtual, physical]
+          default: virtual
+        dailyLimit:
+          type: integer
+          minimum: 1
+          maximum: 10000000
+          description: "Daily spending limit in cents"
+          example: 100000
+        monthlyLimit:
+          type: integer
+          minimum: 1
+          maximum: 100000000
+          description: "Monthly spending limit in cents"
+          example: 500000
+        mccBlacklist:
+          type: array
+          items:
+            type: string
+            minLength: 4
+            maxLength: 4
+          description: "Blocked MCC codes"
+          example: ["7995", "5933"]
+      required:
+        - dailyLimit
+        - monthlyLimit
+
+    CardResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [virtual, physical]
+        lithicCardToken:
+          type: string
+          nullable: true
+        dailyLimit:
+          type: string
+        monthlyLimit:
+          type: string
+        mccBlacklist:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, frozen, cancelled]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        lithicCard:
+          type: object
+          properties:
+            token:
+              type: string
+            type:
+              type: string
+            state:
+              type: string
+            lastFour:
+              type: string
+
+    UpdateCardRequest:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: [freeze, unfreeze, cancel]
+        dailyLimit:
+          type: integer
+          minimum: 1
+          maximum: 10000000
+        monthlyLimit:
+          type: integer
+          minimum: 1
+          maximum: 100000000
+        mccBlacklist:
+          type: array
+          items:
+            type: string
+            minLength: 4
+            maxLength: 4
+
+    CardListResponse:
+      type: object
+      properties:
+        cards:
+          type: array
+          items:
+            $ref: "#/components/schemas/CardResponse"
+
+    # ---------- Transactions ----------
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        subAccountId:
+          type: string
+          nullable: true
+        lithicTxToken:
+          type: string
+        type:
+          type: string
+          enum: [authorization, settlement, reversal, deposit, withdrawal]
+        amount:
+          type: string
+          description: "BigInt as string"
+        currency:
+          type: string
+          example: "USD"
+        merchantName:
+          type: string
+          nullable: true
+        merchantMcc:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [pending, approved, declined, settled, reversed, failed]
+        onChainTxHash:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    TransactionDetail:
+      allOf:
+        - $ref: "#/components/schemas/Transaction"
+        - type: object
+          properties:
+            settlementNonce:
+              type: string
+              nullable: true
+            errorMessage:
+              type: string
+              nullable: true
+            retryCount:
+              type: integer
+
+    TransactionListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Transaction"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    # ---------- Yield ----------
+    YieldSummary:
+      type: object
+      properties:
+        totalDeposited:
+          type: string
+          description: "6-decimal USDC"
+        totalShares:
+          type: string
+        unrealizedYield:
+          type: string
+          description: "6-decimal USDC"
+        apyBps:
+          type: integer
+          description: "APY in basis points"
+        snapshotDate:
+          type: string
+          format: date-time
+          nullable: true
+
+    YieldSnapshot:
+      type: object
+      properties:
+        id:
+          type: string
+        snapshotDate:
+          type: string
+          format: date-time
+        totalDeposited:
+          type: string
+        totalShares:
+          type: string
+        totalYield:
+          type: string
+        apyBps:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+
+    YieldSnapshotListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/YieldSnapshot"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    # ---------- Tenants ----------
+    CreateTenantRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: "Acme Corp"
+        custodyModel:
+          type: string
+          enum: [MODEL_A, MODEL_B]
+          default: MODEL_A
+        webhookUrl:
+          type: string
+          format: uri
+          example: "https://acme.com/webhooks"
+        rateLimit:
+          type: integer
+          minimum: 10
+          maximum: 100000
+          default: 1000
+
+    Tenant:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        custodyModel:
+          type: string
+          enum: [MODEL_A, MODEL_B]
+        webhookUrl:
+          type: string
+          nullable: true
+        rateLimit:
+          type: integer
+        status:
+          type: string
+          enum: [active, suspended, disabled]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    TenantCreated:
+      allOf:
+        - $ref: "#/components/schemas/Tenant"
+        - type: object
+          required: [apiKey]
+          properties:
+            apiKey:
+              type: string
+              description: "Raw API key (shown only once). Prefix: msk_"
+              example: "msk_a1b2c3d4..."
+
+    UpdateTenantRequest:
+      type: object
+      properties:
+        webhookUrl:
+          type: string
+          format: uri
+          nullable: true
+        rateLimit:
+          type: integer
+          minimum: 10
+          maximum: 100000
+        status:
+          type: string
+          enum: [active, suspended, disabled]
+
+    RotateKeyResponse:
+      type: object
+      properties:
+        tenantId:
+          type: string
+        apiKey:
+          type: string
+          description: "New raw API key (shown only once)"
+        message:
+          type: string
+
+    # ---------- Webhooks ----------
+    LithicASARequest:
+      type: object
+      properties:
+        token:
+          type: string
+        card_token:
+          type: string
+        status:
+          type: string
+          enum: [AUTHORIZATION, AUTHORIZATION_ADVICE, CLEARING, VOID]
+        amount:
+          type: integer
+          description: "Amount in cents"
+        merchant:
+          type: object
+          properties:
+            descriptor:
+              type: string
+            mcc:
+              type: string
+            city:
+              type: string
+            country:
+              type: string
+        created:
+          type: string
+          format: date-time
+
+    LithicASAResponse:
+      type: object
+      required: [result]
+      properties:
+        result:
+          type: string
+          enum: [APPROVED, DECLINED]
+
+    # ---------- Admin ----------
+    DashboardResponse:
+      type: object
+      properties:
+        totalTenants:
+          type: integer
+        tenantsByStatus:
+          type: object
+          properties:
+            active:
+              type: integer
+            suspended:
+              type: integer
+            disabled:
+              type: integer
+        totalUsers:
+          type: integer
+        totalSubAccounts:
+          type: integer
+        totalTransactionsToday:
+          type: integer
+        totalVolumeToday:
+          type: string
+          description: "BigInt as string (cents)"
+
+    TreasuryResponse:
+      type: object
+      properties:
+        addresses:
+          type: object
+          properties:
+            m1Treasury:
+              type: string
+              nullable: true
+            platformIssuerSafe:
+              type: string
+              nullable: true
+            usdc:
+              type: string
+              nullable: true
+            morphoVault:
+              type: string
+              nullable: true
+            treasuryVault:
+              type: string
+              nullable: true
+        lastSweepTimestamp:
+          type: string
+          format: date-time
+          nullable: true
+        lastYieldSnapshotTimestamp:
+          type: string
+          format: date-time
+          nullable: true
+
+    SettlementQueueResponse:
+      type: object
+      properties:
+        pendingCount:
+          type: integer
+        failedCount:
+          type: integer
+        averageSettlementTimeMs:
+          type: integer
+          nullable: true
+        recentFailures:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              lithicTxToken:
+                type: string
+              amount:
+                type: string
+              errorMessage:
+                type: string
+                nullable: true
+              retryCount:
+                type: integer
+              createdAt:
+                type: string
+                format: date-time
+              updatedAt:
+                type: string
+                format: date-time
+
+    TenantMetrics:
+      type: object
+      properties:
+        tenantId:
+          type: string
+        tenantName:
+          type: string
+        tenantStatus:
+          type: string
+        userCount:
+          type: integer
+        cardCount:
+          type: integer
+        txCount:
+          type: integer
+        volume:
+          type: string
+          description: "BigInt as string"
+        yieldAccrued:
+          type: string
+          description: "6-decimal USDC"
+
+    TenantMetricsListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TenantMetrics"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+paths:
+  # ==================== Health ====================
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: Returns service health including database, Redis, and watcher status.
+      security: []
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy or degraded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Service is down
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  # ==================== Webhooks ====================
+  /webhooks/lithic/asa:
+    post:
+      tags: [Webhooks]
+      summary: Lithic ASA webhook
+      description: |
+        Receives Lithic Authorization Stream Access (ASA) events.
+        Authenticated via HMAC signature in X-Lithic-Signature header (not API key).
+      security: []
+      operationId: handleLithicASA
+      parameters:
+        - name: X-Lithic-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+          description: HMAC signature for webhook verification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LithicASARequest"
+      responses:
+        "200":
+          description: Authorization decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LithicASAResponse"
+        "401":
+          description: Missing or invalid webhook signature
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ==================== Users ====================
+  /v1/users:
+    post:
+      tags: [Users]
+      summary: Create user
+      description: Creates a new user within the authenticated tenant.
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: User already exists
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  userId:
+                    type: string
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/users/{id}:
+    get:
+      tags: [Users]
+      summary: Get user details
+      description: Retrieves a user by ID, including sub-accounts, scoped to the authenticated tenant.
+      operationId: getUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: User found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserWithSubAccounts"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/users/{id}/balance:
+    get:
+      tags: [Users]
+      summary: Get user balance
+      description: |
+        Computes the user's USDC balance from ledger entries and returns
+        daily/monthly spend aggregates.
+      operationId: getUserBalance
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Balance info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BalanceResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ==================== Cards ====================
+  /v1/users/{userId}/cards:
+    post:
+      tags: [Cards]
+      summary: Issue a card
+      description: Issues a new virtual or physical card for the specified user via Lithic.
+      operationId: issueCard
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IssueCardRequest"
+      responses:
+        "201":
+          description: Card issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      tags: [Cards]
+      summary: List user's cards
+      description: Returns all cards (sub-accounts) for the specified user.
+      operationId: listUserCards
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Card list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardListResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/cards/{cardId}:
+    patch:
+      tags: [Cards]
+      summary: Update card
+      description: |
+        Freeze, unfreeze, cancel, or update limits on an existing card.
+        Propagates state changes to Lithic and updates Redis cache.
+      operationId: updateCard
+      parameters:
+        - name: cardId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCardRequest"
+      responses:
+        "200":
+          description: Card updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Card not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ==================== Transactions ====================
+  /v1/transactions:
+    get:
+      tags: [Transactions]
+      summary: List transactions
+      description: Returns paginated transactions for the authenticated tenant with optional status/type filters.
+      operationId: listTransactions
+      parameters:
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/OffsetParam"
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, approved, declined, settled, reversed, failed]
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [authorization, settlement, reversal, deposit, withdrawal]
+      responses:
+        "200":
+          description: Transaction list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionListResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/transactions/{id}:
+    get:
+      tags: [Transactions]
+      summary: Get transaction details
+      description: Retrieves a single transaction by ID, scoped to the authenticated tenant.
+      operationId: getTransaction
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionDetail"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Transaction not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ==================== Yield ====================
+  /v1/yield/summary:
+    get:
+      tags: [Yield]
+      summary: Get yield summary
+      description: Returns the latest yield snapshot for the authenticated tenant.
+      operationId: getYieldSummary
+      responses:
+        "200":
+          description: Yield summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/YieldSummary"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/yield/snapshots:
+    get:
+      tags: [Yield]
+      summary: List yield snapshots
+      description: Returns paginated yield snapshots for the authenticated tenant.
+      operationId: listYieldSnapshots
+      parameters:
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/OffsetParam"
+      responses:
+        "200":
+          description: Yield snapshots
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/YieldSnapshotListResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ==================== Tenants ====================
+  /v1/tenants:
+    post:
+      tags: [Tenants]
+      summary: Create tenant
+      description: Creates a new tenant and returns its API key (admin only).
+      operationId: createTenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTenantRequest"
+      responses:
+        "201":
+          description: Tenant created with API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantCreated"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden (admin only)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/tenants/{id}:
+    get:
+      tags: [Tenants]
+      summary: Get tenant details
+      description: Retrieves tenant configuration and status (admin only).
+      operationId: getTenant
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Tenant found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tenant"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden (admin only)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      tags: [Tenants]
+      summary: Update tenant
+      description: Updates tenant settings such as webhook URL, rate limit, or status (admin only).
+      operationId: updateTenant
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTenantRequest"
+      responses:
+        "200":
+          description: Tenant updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tenant"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden (admin only)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/tenants/{id}/rotate-key:
+    post:
+      tags: [Tenants]
+      summary: Rotate tenant API key
+      description: Generates a new API key for the specified tenant, invalidating the old one (admin only).
+      operationId: rotateTenantKey
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Key rotated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateKeyResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden (admin only)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ==================== Admin ====================
+  /v1/admin/dashboard:
+    get:
+      tags: [Admin]
+      summary: Platform dashboard overview
+      description: |
+        Multi-tenant overview including total tenants, users, sub-accounts,
+        and today's transaction volume. Admin only.
+      operationId: getAdminDashboard
+      responses:
+        "200":
+          description: Dashboard metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden (admin only)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/admin/treasury:
+    get:
+      tags: [Admin]
+      summary: Treasury health
+      description: |
+        Returns M1 Treasury configuration addresses and timestamps for the
+        last sweep and yield snapshot. Admin only.
+      operationId: getAdminTreasury
+      responses:
+        "200":
+          description: Treasury info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TreasuryResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden (admin only)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/admin/settlement-queue:
+    get:
+      tags: [Admin]
+      summary: Settlement queue status
+      description: |
+        Returns pending/failed settlement counts, average settlement time,
+        and the 10 most recent settlement failures. Admin only.
+      operationId: getAdminSettlementQueue
+      responses:
+        "200":
+          description: Settlement queue status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettlementQueueResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden (admin only)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/admin/tenants/metrics:
+    get:
+      tags: [Admin]
+      summary: Per-tenant metrics
+      description: |
+        Returns paginated per-tenant metrics including user count, card count,
+        transaction count, volume, and yield accrued. Sorted by volume descending.
+        Admin only.
+      operationId: getAdminTenantMetrics
+      parameters:
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/OffsetParam"
+      responses:
+        "200":
+          description: Tenant metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantMetricsListResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden (admin only)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"

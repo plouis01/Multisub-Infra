@@ -28,6 +28,13 @@ const CIRCUIT_BREAKER_PAUSE_MS = 60_000;
 const ISSUER_SAFE_MIN_BALANCE = 10_000_000_000n; // 10,000 USDC (6-decimal)
 const ISSUER_SAFE_TOPUP_AMOUNT = 50_000_000_000n; // 50,000 USDC top-up target
 
+// Yield allocation splits (must sum to 10_000 = 100%)
+export const ALLOCATION_PLATFORM_BPS = 3000; // 30% to Platform Issuer
+export const ALLOCATION_TENANT_BPS = 6000; // 60% to tenant yield accrual
+export const ALLOCATION_RESERVE_BPS = 1000; // 10% reserve (stays in vault)
+
+const ALLOCATION_MIN_YIELD = 1_000_000n; // $1 USDC in 6-decimal -- skip dust
+
 // ============ Types ============
 
 export interface YieldSummary {
@@ -44,6 +51,15 @@ interface SnapshotResult {
   totalShares: string;
   totalYield: string;
   apyBps: number;
+}
+
+export interface AllocationResult {
+  tenantId: string;
+  totalYield: string;
+  platformShare: string;
+  tenantShare: string;
+  reserveShare: string;
+  txHash: string | null;
 }
 
 // ============ Yield Manager ============
@@ -69,6 +85,7 @@ export class YieldManager {
   public lastSweepAt = 0;
   public lastSnapshotAt = 0;
   public lastTopUpCheckAt = 0;
+  public lastAllocationAt = 0;
 
   constructor(
     config: Config,
@@ -140,9 +157,19 @@ export class YieldManager {
   private scheduleSnapshot(delayMs: number): void {
     if (!this.running) return;
     this.snapshotTimer = setTimeout(() => {
-      this.snapshotYield().catch((err) => {
-        console.error(`${LOG_PREFIX} unhandled error in snapshotYield()`, err);
-      });
+      this.snapshotYield()
+        .then((snapshots) => {
+          if (snapshots.length > 0) {
+            return this.allocateYield(snapshots);
+          }
+          return [];
+        })
+        .catch((err) => {
+          console.error(
+            `${LOG_PREFIX} unhandled error in snapshotYield/allocateYield`,
+            err,
+          );
+        });
     }, delayMs);
   }
 
@@ -389,6 +416,161 @@ export class YieldManager {
     } catch (err) {
       console.error(`${LOG_PREFIX} snapshot cycle error`, err);
       this.scheduleSnapshot(this.snapshotIntervalMs);
+    }
+
+    return results;
+  }
+
+  // ============ Yield Allocation (60/30/10) ============
+
+  async allocateYield(
+    snapshots: SnapshotResult[],
+  ): Promise<AllocationResult[]> {
+    if (!this.running) return [];
+
+    const results: AllocationResult[] = [];
+
+    try {
+      if (
+        !this.config.platformIssuerSafeAddress ||
+        !this.config.m1TreasuryAddress
+      ) {
+        console.log(
+          `${LOG_PREFIX} allocate: issuer/treasury addresses not configured -- skipping`,
+        );
+        this.lastAllocationAt = Date.now();
+        return [];
+      }
+
+      // Filter to tenants with yield above the minimum threshold ($1)
+      const eligible = snapshots.filter(
+        (s) => BigInt(s.totalYield) >= ALLOCATION_MIN_YIELD,
+      );
+
+      if (eligible.length === 0) {
+        console.log(
+          `${LOG_PREFIX} allocate: no tenants with yield above minimum ($1) -- skipping`,
+        );
+        this.lastAllocationAt = Date.now();
+        return [];
+      }
+
+      console.log(
+        `${LOG_PREFIX} allocate: distributing yield for ${eligible.length} tenant(s)`,
+      );
+
+      for (const snapshot of eligible) {
+        try {
+          const totalYield = BigInt(snapshot.totalYield);
+
+          // Split according to 60/30/10 basis points
+          const platformShare =
+            (totalYield * BigInt(ALLOCATION_PLATFORM_BPS)) / 10_000n;
+          const tenantShare =
+            (totalYield * BigInt(ALLOCATION_TENANT_BPS)) / 10_000n;
+          const reserveShare = totalYield - platformShare - tenantShare;
+
+          // --- Transfer platform share from M1 Treasury to Platform Issuer Safe ---
+          const transferData = encodeFunctionData({
+            abi: ERC20_ABI,
+            functionName: "transfer",
+            args: [
+              this.config.platformIssuerSafeAddress as `0x${string}`,
+              platformShare,
+            ],
+          });
+
+          const txHash = await this.walletClient.sendTransaction({
+            to: this.config.m1TreasuryAddress as `0x${string}`,
+            data: transferData,
+            chain: this.walletClient.chain,
+            account: this.walletClient.account!,
+          });
+
+          const receipt = await this.publicClient.waitForTransactionReceipt({
+            hash: txHash,
+          });
+
+          if (receipt.status !== "success") {
+            console.error(
+              `${LOG_PREFIX} allocate: platform transfer reverted for tenant ${snapshot.tenantId}: ${txHash}`,
+            );
+            continue;
+          }
+
+          console.log(
+            `${LOG_PREFIX} allocate: tenant=${snapshot.tenantId} platform=${platformShare} tenant=${tenantShare} reserve=${reserveShare} tx=${txHash}`,
+          );
+
+          // --- Credit tenant share to BalanceLedger ---
+          // Find first active user for this tenant to satisfy the userId FK
+          const tenantUsers = await this.prisma.user.findMany({
+            where: { tenantId: snapshot.tenantId, status: "active" },
+            select: { id: true },
+            take: 1,
+          });
+
+          if (tenantUsers.length > 0) {
+            await this.prisma.balanceLedger.create({
+              data: {
+                tenantId: snapshot.tenantId,
+                userId: tenantUsers[0].id,
+                token: "USDC",
+                type: "yield",
+                amount: tenantShare.toString(),
+                reference: txHash,
+                note: `Yield allocation (60%) for tenant ${snapshot.tenantId}`,
+              },
+            });
+          }
+
+          // --- Record platform share in BalanceLedger ---
+          if (tenantUsers.length > 0) {
+            await this.prisma.balanceLedger.create({
+              data: {
+                tenantId: snapshot.tenantId,
+                userId: tenantUsers[0].id,
+                token: "USDC",
+                type: "yield",
+                amount: platformShare.toString(),
+                reference: txHash,
+                note: `Yield allocation (30%) platform share -> Issuer Safe`,
+              },
+            });
+          }
+
+          // --- Audit log ---
+          await this.createAuditLog(snapshot.tenantId, "yield_allocated", {
+            totalYield: totalYield.toString(),
+            platformShare: platformShare.toString(),
+            tenantShare: tenantShare.toString(),
+            reserveShare: reserveShare.toString(),
+            txHash,
+            blockNumber: receipt.blockNumber.toString(),
+          });
+
+          results.push({
+            tenantId: snapshot.tenantId,
+            totalYield: totalYield.toString(),
+            platformShare: platformShare.toString(),
+            tenantShare: tenantShare.toString(),
+            reserveShare: reserveShare.toString(),
+            txHash,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(
+            `${LOG_PREFIX} allocate error for tenant ${snapshot.tenantId}: ${msg}`,
+          );
+        }
+      }
+
+      this.lastAllocationAt = Date.now();
+      console.log(
+        `${LOG_PREFIX} allocate complete -- ${results.length} tenant(s) allocated`,
+      );
+    } catch (err) {
+      console.error(`${LOG_PREFIX} allocate cycle error`, err);
     }
 
     return results;

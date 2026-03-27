@@ -32,6 +32,21 @@ interface ISafeFactory {
     /// @notice Emitted when the USDC address is updated
     event UsdcUpdated(address indexed oldUsdc, address indexed newUsdc);
 
+    /// @notice Emitted when a Roles Module is deployed alongside a Safe
+    event RolesModuleDeployed(address indexed m2Safe, address indexed rolesModule);
+
+    /// @notice Emitted when a Delay Module is deployed alongside a Safe
+    event DelayModuleDeployed(address indexed m2Safe, address indexed delayModule);
+
+    /// @notice Emitted when the Roles Module implementation is updated
+    event RolesModuleImplementationUpdated(address indexed oldImpl, address indexed newImpl);
+
+    /// @notice Emitted when the Delay Module implementation is updated
+    event DelayModuleImplementationUpdated(address indexed oldImpl, address indexed newImpl);
+
+    /// @notice Emitted when the M1 Treasury address is updated
+    event M1TreasuryAddressUpdated(address indexed oldTreasury, address indexed newTreasury);
+
     // ============ Deployment ============
 
     /// @notice Deploy a fully configured M2 Safe with SpendSettler module

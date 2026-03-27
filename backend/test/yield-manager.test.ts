@@ -15,7 +15,13 @@ import {
   type MockPrismaClient,
   type MockRedisClient,
 } from "./mocks.js";
-import { YieldManager } from "../src/services/yield-manager.js";
+import {
+  YieldManager,
+  ALLOCATION_PLATFORM_BPS,
+  ALLOCATION_TENANT_BPS,
+  ALLOCATION_RESERVE_BPS,
+  type AllocationResult,
+} from "../src/services/yield-manager.js";
 import { SweepService } from "../src/services/sweep-service.js";
 import type { Config } from "../src/config/index.js";
 
@@ -597,6 +603,226 @@ describe("YieldManager", () => {
       const summary = await yieldManager.getYieldSummary("tenant-1");
 
       expect(summary).toBeNull();
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // Yield Allocation (60/30/10)
+  // ----------------------------------------------------------------
+
+  describe("allocateYield", () => {
+    const makeSnapshot = (tenantId: string, totalYield: string) => ({
+      tenantId,
+      totalDeposited: "1000000000",
+      totalShares: "500000",
+      totalYield,
+      apyBps: 500,
+    });
+
+    beforeEach(() => {
+      // Default: successful tx flow
+      walletClient.sendTransaction.mockResolvedValue(
+        ("0x" + "f".repeat(64)) as `0x${string}`,
+      );
+      publicClient.waitForTransactionReceipt.mockResolvedValue({
+        status: "success",
+        blockNumber: 9999n,
+        transactionHash: "0x" + "f".repeat(64),
+      });
+      // Default: a user exists for the tenant
+      prisma.user.findMany.mockResolvedValue([{ id: "user-1" }]);
+    });
+
+    it("splits yield correctly at 30/60/10", async () => {
+      // 100 USDC yield
+      const snapshots = [makeSnapshot("tenant-1", "100000000")];
+
+      const results = await yieldManager.allocateYield(snapshots);
+
+      expect(results).toHaveLength(1);
+      // 30% of 100_000_000 = 30_000_000
+      expect(results[0].platformShare).toBe("30000000");
+      // 60% of 100_000_000 = 60_000_000
+      expect(results[0].tenantShare).toBe("60000000");
+      // 10% of 100_000_000 = 10_000_000
+      expect(results[0].reserveShare).toBe("10000000");
+    });
+
+    it("transfers platform share to issuer safe via walletClient", async () => {
+      const snapshots = [makeSnapshot("tenant-1", "100000000")];
+
+      await yieldManager.allocateYield(snapshots);
+
+      // Verify sendTransaction was called (platform transfer)
+      expect(walletClient.sendTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: config.m1TreasuryAddress,
+        }),
+      );
+      // Should have waited for receipt
+      expect(publicClient.waitForTransactionReceipt).toHaveBeenCalled();
+    });
+
+    it("credits tenant share to BalanceLedger as type yield", async () => {
+      const snapshots = [makeSnapshot("tenant-1", "100000000")];
+
+      await yieldManager.allocateYield(snapshots);
+
+      // Two BalanceLedger entries: tenant share (60%) + platform share (30%)
+      expect(prisma.balanceLedger.create).toHaveBeenCalledTimes(2);
+
+      // First call: tenant share
+      expect(prisma.balanceLedger.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            tenantId: "tenant-1",
+            type: "yield",
+            amount: "60000000",
+            note: expect.stringContaining("60%"),
+          }),
+        }),
+      );
+    });
+
+    it("reserve stays untouched (no transfer or ledger entry for reserve)", async () => {
+      const snapshots = [makeSnapshot("tenant-1", "100000000")];
+
+      const results = await yieldManager.allocateYield(snapshots);
+
+      // Only 1 sendTransaction call (platform share transfer)
+      expect(walletClient.sendTransaction).toHaveBeenCalledTimes(1);
+
+      // Reserve is simply totalYield - platform - tenant, stays in vault
+      expect(results[0].reserveShare).toBe("10000000");
+    });
+
+    it("skips allocation below minimum threshold ($1)", async () => {
+      // 0.50 USDC yield = 500_000 (below 1_000_000 threshold)
+      const snapshots = [makeSnapshot("tenant-1", "500000")];
+
+      const results = await yieldManager.allocateYield(snapshots);
+
+      expect(results).toHaveLength(0);
+      expect(walletClient.sendTransaction).not.toHaveBeenCalled();
+      expect(prisma.balanceLedger.create).not.toHaveBeenCalled();
+    });
+
+    it("handles transaction revert gracefully", async () => {
+      walletClient.sendTransaction.mockResolvedValue(
+        ("0x" + "f".repeat(64)) as `0x${string}`,
+      );
+      publicClient.waitForTransactionReceipt.mockResolvedValue({
+        status: "reverted",
+        blockNumber: 9999n,
+        transactionHash: "0x" + "f".repeat(64),
+      });
+
+      const snapshots = [makeSnapshot("tenant-1", "100000000")];
+      const results = await yieldManager.allocateYield(snapshots);
+
+      // Reverted tx means no result recorded
+      expect(results).toHaveLength(0);
+      // BalanceLedger should NOT be written on revert
+      expect(prisma.balanceLedger.create).not.toHaveBeenCalled();
+    });
+
+    it("handles sendTransaction error gracefully", async () => {
+      walletClient.sendTransaction.mockRejectedValue(
+        new Error("gas estimation failed"),
+      );
+
+      const snapshots = [makeSnapshot("tenant-1", "100000000")];
+      const results = await yieldManager.allocateYield(snapshots);
+
+      // Error is caught per-tenant, returns empty results
+      expect(results).toHaveLength(0);
+    });
+
+    it("continues processing tenants if one fails", async () => {
+      walletClient.sendTransaction
+        .mockRejectedValueOnce(new Error("tx failed for tenant-1"))
+        .mockResolvedValueOnce(("0x" + "f".repeat(64)) as `0x${string}`);
+
+      const snapshots = [
+        makeSnapshot("tenant-1", "50000000"),
+        makeSnapshot("tenant-2", "80000000"),
+      ];
+
+      const results = await yieldManager.allocateYield(snapshots);
+
+      // Only tenant-2 succeeds
+      expect(results).toHaveLength(1);
+      expect(results[0].tenantId).toBe("tenant-2");
+    });
+
+    it("records audit log for each allocation", async () => {
+      const snapshots = [makeSnapshot("tenant-1", "100000000")];
+
+      await yieldManager.allocateYield(snapshots);
+
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            tenantId: "tenant-1",
+            action: "yield_allocated",
+            details: expect.objectContaining({
+              platformShare: "30000000",
+              tenantShare: "60000000",
+              reserveShare: "10000000",
+            }),
+          }),
+        }),
+      );
+    });
+
+    it("updates lastAllocationAt timestamp", async () => {
+      const before = Date.now();
+      const snapshots = [makeSnapshot("tenant-1", "100000000")];
+
+      await yieldManager.allocateYield(snapshots);
+
+      expect(yieldManager.lastAllocationAt).toBeGreaterThanOrEqual(before);
+    });
+
+    it("returns empty when issuer safe address not configured", async () => {
+      const noIssuerConfig = createTestConfig({
+        platformIssuerSafeAddress: "",
+      });
+      const noIssuerManager = new YieldManager(
+        noIssuerConfig,
+        publicClient as any,
+        walletClient as any,
+        prisma as any,
+        redis as any,
+      );
+      (noIssuerManager as any).running = true;
+
+      const snapshots = [makeSnapshot("tenant-1", "100000000")];
+      const results = await noIssuerManager.allocateYield(snapshots);
+
+      expect(results).toHaveLength(0);
+      expect(walletClient.sendTransaction).not.toHaveBeenCalled();
+
+      noIssuerManager.stop();
+    });
+
+    it("handles rounding correctly for odd yield amounts", async () => {
+      // 33 USDC yield -> 33_000_000
+      // 60% = 19_800_000, 30% = 9_900_000, reserve = 33_000_000 - 19_800_000 - 9_900_000 = 3_300_000
+      const snapshots = [makeSnapshot("tenant-1", "33000000")];
+
+      const results = await yieldManager.allocateYield(snapshots);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].platformShare).toBe("9900000");
+      expect(results[0].tenantShare).toBe("19800000");
+      expect(results[0].reserveShare).toBe("3300000");
+      // Verify they sum to totalYield
+      const sum =
+        BigInt(results[0].platformShare) +
+        BigInt(results[0].tenantShare) +
+        BigInt(results[0].reserveShare);
+      expect(sum.toString()).toBe("33000000");
     });
   });
 });

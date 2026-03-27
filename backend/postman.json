@@ -1,0 +1,570 @@
+{
+  "info": {
+    "name": "MultiSubs BaaS API",
+    "description": "Multi-tenant Banking-as-a-Service backend for card authorization, settlement, yield management, and on-chain treasury operations.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "multisubs-baas-api",
+    "version": "0.1.0"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "apiKey",
+      "value": "msk_your_api_key_here",
+      "type": "string"
+    }
+  ],
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "key",
+        "value": "X-API-Key",
+        "type": "string"
+      },
+      {
+        "key": "value",
+        "value": "{{apiKey}}",
+        "type": "string"
+      },
+      {
+        "key": "in",
+        "value": "header",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Set the X-API-Key header from collection variable",
+          "pm.request.headers.upsert({",
+          "    key: 'X-API-Key',",
+          "    value: pm.collectionVariables.get('apiKey')",
+          "});"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Returns service health including database, Redis, and watcher status. No authentication required."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Webhooks",
+      "item": [
+        {
+          "name": "Lithic ASA Webhook",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Lithic-Signature",
+                "value": "hmac-sha256-signature-here",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"tx_abc123\",\n  \"card_token\": \"card_def456\",\n  \"status\": \"AUTHORIZATION\",\n  \"amount\": 5000,\n  \"merchant\": {\n    \"descriptor\": \"ACME Store\",\n    \"mcc\": \"5411\",\n    \"city\": \"San Francisco\",\n    \"country\": \"US\"\n  },\n  \"created\": \"2026-03-26T12:00:00Z\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/lithic/asa",
+              "host": ["{{baseUrl}}"],
+              "path": ["webhooks", "lithic", "asa"]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Receives Lithic ASA events. Authenticated via HMAC signature, not API key."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "Create User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalId\": \"user-12345\",\n  \"email\": \"user@example.com\",\n  \"kycStatus\": \"pending\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/users",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users"]
+            },
+            "description": "Creates a new user within the authenticated tenant."
+          }
+        },
+        {
+          "name": "Get User",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/users/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "clxyz123abc",
+                  "description": "User ID"
+                }
+              ]
+            },
+            "description": "Retrieves a user by ID including sub-accounts."
+          }
+        },
+        {
+          "name": "Get User Balance",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/users/:id/balance",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users", ":id", "balance"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "clxyz123abc",
+                  "description": "User ID"
+                }
+              ]
+            },
+            "description": "Returns USDC balance and daily/monthly spend for the user."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cards",
+      "item": [
+        {
+          "name": "Issue Card",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"virtual\",\n  \"dailyLimit\": 100000,\n  \"monthlyLimit\": 500000,\n  \"mccBlacklist\": [\"7995\"]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/users/:userId/cards",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users", ":userId", "cards"],
+              "variable": [
+                {
+                  "key": "userId",
+                  "value": "clxyz123abc",
+                  "description": "User ID"
+                }
+              ]
+            },
+            "description": "Issues a new virtual or physical card for the specified user via Lithic."
+          }
+        },
+        {
+          "name": "List User Cards",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/users/:userId/cards",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "users", ":userId", "cards"],
+              "variable": [
+                {
+                  "key": "userId",
+                  "value": "clxyz123abc",
+                  "description": "User ID"
+                }
+              ]
+            },
+            "description": "Returns all cards (sub-accounts) for the specified user."
+          }
+        },
+        {
+          "name": "Update Card",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"freeze\",\n  \"dailyLimit\": 50000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/cards/:cardId",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "cards", ":cardId"],
+              "variable": [
+                {
+                  "key": "cardId",
+                  "value": "clxyz456def",
+                  "description": "Card (sub-account) ID"
+                }
+              ]
+            },
+            "description": "Freeze, unfreeze, cancel, or update limits on an existing card."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Transactions",
+      "item": [
+        {
+          "name": "List Transactions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions?limit=50&offset=0",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "transactions"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Maximum items to return (1-100)"
+                },
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "description": "Items to skip"
+                },
+                {
+                  "key": "status",
+                  "value": "settled",
+                  "description": "Filter by status: pending, approved, declined, settled, reversed, failed",
+                  "disabled": true
+                },
+                {
+                  "key": "type",
+                  "value": "authorization",
+                  "description": "Filter by type: authorization, settlement, reversal, deposit, withdrawal",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Returns paginated transactions for the authenticated tenant."
+          }
+        },
+        {
+          "name": "Get Transaction",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/transactions/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "transactions", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "clxyz789ghi",
+                  "description": "Transaction ID"
+                }
+              ]
+            },
+            "description": "Retrieves a single transaction by ID."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Yield",
+      "item": [
+        {
+          "name": "Get Yield Summary",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/yield/summary",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "yield", "summary"]
+            },
+            "description": "Returns the latest yield snapshot for the authenticated tenant."
+          }
+        },
+        {
+          "name": "List Yield Snapshots",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/yield/snapshots?limit=50&offset=0",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "yield", "snapshots"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Maximum items to return (1-100)"
+                },
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "description": "Items to skip"
+                }
+              ]
+            },
+            "description": "Returns paginated yield snapshots for the authenticated tenant."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Tenants",
+      "item": [
+        {
+          "name": "Create Tenant",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Acme Corp\",\n  \"custodyModel\": \"MODEL_A\",\n  \"webhookUrl\": \"https://acme.com/webhooks\",\n  \"rateLimit\": 1000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/tenants",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "tenants"]
+            },
+            "description": "Creates a new tenant and returns its API key. Admin only."
+          }
+        },
+        {
+          "name": "Get Tenant",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/tenants/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "tenants", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "tenant_id_here",
+                  "description": "Tenant ID"
+                }
+              ]
+            },
+            "description": "Retrieves tenant configuration and status. Admin only."
+          }
+        },
+        {
+          "name": "Update Tenant",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"webhookUrl\": \"https://acme.com/webhooks/v2\",\n  \"rateLimit\": 2000,\n  \"status\": \"active\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/tenants/:id",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "tenants", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "tenant_id_here",
+                  "description": "Tenant ID"
+                }
+              ]
+            },
+            "description": "Updates tenant settings. Admin only."
+          }
+        },
+        {
+          "name": "Rotate Tenant API Key",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/tenants/:id/rotate-key",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "tenants", ":id", "rotate-key"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "tenant_id_here",
+                  "description": "Tenant ID"
+                }
+              ]
+            },
+            "description": "Generates a new API key for the tenant, invalidating the old one. Admin only."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "Dashboard Overview",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/dashboard",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "dashboard"]
+            },
+            "description": "Multi-tenant overview including total tenants, users, sub-accounts, and today's transaction volume. Admin only."
+          }
+        },
+        {
+          "name": "Treasury Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/treasury",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "treasury"]
+            },
+            "description": "Returns M1 Treasury configuration addresses and last sweep/yield timestamps. Admin only."
+          }
+        },
+        {
+          "name": "Settlement Queue Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/settlement-queue",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "settlement-queue"]
+            },
+            "description": "Returns pending/failed settlement counts, average settlement time, and recent failures. Admin only."
+          }
+        },
+        {
+          "name": "Per-Tenant Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/admin/tenants/metrics?limit=50&offset=0",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "admin", "tenants", "metrics"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Maximum items to return (1-100)"
+                },
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "description": "Items to skip"
+                }
+              ]
+            },
+            "description": "Returns paginated per-tenant metrics sorted by volume descending. Admin only."
+          }
+        }
+      ]
+    }
+  ]
+}

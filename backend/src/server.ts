@@ -21,6 +21,7 @@ import { createWebhooksRouter } from "./routes/webhooks.js";
 import { createTenantsRouter } from "./routes/tenants.js";
 import { createTransactionsRouter } from "./routes/transactions.js";
 import { createYieldRouter } from "./routes/yield.js";
+import { createAdminRouter } from "./routes/admin.js";
 
 // ============ Main ============
 
@@ -178,6 +179,11 @@ async function main(): Promise<void> {
     prisma,
     adminTenantId: process.env.ADMIN_TENANT_ID ?? "",
   });
+  const adminRouter = createAdminRouter({
+    prisma,
+    config,
+    adminTenantId: process.env.ADMIN_TENANT_ID ?? "",
+  });
 
   app.use("/v1", authMiddleware as express.RequestHandler);
   app.use("/v1", rateLimitMiddleware as express.RequestHandler);
@@ -186,6 +192,7 @@ async function main(): Promise<void> {
   app.use(transactionsRouter);
   app.use(yieldRouter);
   app.use(tenantsRouter);
+  app.use(adminRouter);
 
   // ── 404 Handler ──
   app.use((_req, res) => {

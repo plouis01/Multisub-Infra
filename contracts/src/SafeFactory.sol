@@ -46,6 +46,21 @@ contract SafeFactory is ISafeFactory, Ownable {
     /// @notice Reverse lookup: m2Safe => SpendSettler module
     mapping(address => address) public safeToSettler;
 
+    /// @notice Zodiac Roles v2 singleton to clone
+    address public rolesModuleImplementation;
+
+    /// @notice Delay Module singleton to clone
+    address public delayModuleImplementation;
+
+    /// @notice M1 Treasury address for sweeper role scoping
+    address public m1TreasuryAddress;
+
+    /// @notice Reverse lookup: m2Safe => Roles Module
+    mapping(address => address) public safeToRoles;
+
+    /// @notice Reverse lookup: m2Safe => Delay Module
+    mapping(address => address) public safeToDelay;
+
     // ============ Errors ============
 
     error InvalidAddress();
@@ -64,13 +79,17 @@ contract SafeFactory is ISafeFactory, Ownable {
     /// @param _settler Settlement service backend address
     /// @param _issuerSafe Platform Issuer Safe address
     /// @param _usdc USDC token address
+    /// @param _rolesModuleImpl Zodiac Roles v2 singleton to clone (address(0) to skip)
+    /// @param _delayModuleImpl Delay Module singleton to clone (address(0) to skip)
     constructor(
         address _initialOwner,
         address _safeImplementation,
         address _spendSettlerImplementation,
         address _settler,
         address _issuerSafe,
-        address _usdc
+        address _usdc,
+        address _rolesModuleImpl,
+        address _delayModuleImpl
     ) Ownable(_initialOwner) {
         if (_safeImplementation == address(0)) revert InvalidAddress();
         if (_spendSettlerImplementation == address(0)) revert InvalidAddress();
@@ -83,6 +102,8 @@ contract SafeFactory is ISafeFactory, Ownable {
         settler = _settler;
         issuerSafe = _issuerSafe;
         usdc = _usdc;
+        rolesModuleImplementation = _rolesModuleImpl;
+        delayModuleImplementation = _delayModuleImpl;
     }
 
     // ============ Configuration ============
@@ -121,6 +142,31 @@ contract SafeFactory is ISafeFactory, Ownable {
         address oldUsdc = usdc;
         usdc = _usdc;
         emit UsdcUpdated(oldUsdc, _usdc);
+    }
+
+    /// @notice Set the Zodiac Roles v2 Module implementation address
+    /// @param _impl The new implementation address (address(0) to disable)
+    function setRolesModuleImplementation(address _impl) external onlyOwner {
+        address oldImpl = rolesModuleImplementation;
+        rolesModuleImplementation = _impl;
+        emit RolesModuleImplementationUpdated(oldImpl, _impl);
+    }
+
+    /// @notice Set the Delay Module implementation address
+    /// @param _impl The new implementation address (address(0) to disable)
+    function setDelayModuleImplementation(address _impl) external onlyOwner {
+        address oldImpl = delayModuleImplementation;
+        delayModuleImplementation = _impl;
+        emit DelayModuleImplementationUpdated(oldImpl, _impl);
+    }
+
+    /// @notice Set the M1 Treasury address for sweeper role scoping
+    /// @param _treasury The new treasury address
+    function setM1TreasuryAddress(address _treasury) external onlyOwner {
+        if (_treasury == address(0)) revert InvalidAddress();
+        address oldTreasury = m1TreasuryAddress;
+        m1TreasuryAddress = _treasury;
+        emit M1TreasuryAddressUpdated(oldTreasury, _treasury);
     }
 
     // ============ Salt Generation ============
@@ -186,9 +232,9 @@ contract SafeFactory is ISafeFactory, Ownable {
                 payable(address(0)) // paymentReceiver
             );
 
-        // Step 3: Deploy and configure SpendSettler for Model A
+        // Step 3: Deploy and configure modules for Model A
         if (custodyModel == uint8(CustodyModel.MODEL_A)) {
-            _deployAndEnableSpendSettler(m2Safe, salt);
+            _deployModules(m2Safe, salt);
         }
         // Model B: user-custodial, no automatic module setup
 
@@ -208,11 +254,13 @@ contract SafeFactory is ISafeFactory, Ownable {
 
     // ============ Internal Functions ============
 
-    /// @notice Deploy a SpendSettler via CREATE2 and enable it as a module on the Safe
-    /// @param m2Safe The Safe to attach the module to
+    /// @notice Deploy all modules for Model A and enable them on the Safe
+    /// @dev Deploys SpendSettler via CREATE2, Roles Module and Delay Module via EIP-1167 clone.
+    ///      Roles/Delay deployment is skipped if their implementation is address(0).
+    /// @param m2Safe The Safe to attach modules to
     /// @param salt The salt for deterministic deployment
-    function _deployAndEnableSpendSettler(address m2Safe, bytes32 salt) internal {
-        // Deploy SpendSettler via CREATE2 with constructor args
+    function _deployModules(address m2Safe, bytes32 salt) internal {
+        // (a) Deploy SpendSettler via CREATE2 with constructor args
         bytes memory bytecode = abi.encodePacked(
             type(SpendSettler).creationCode,
             abi.encode(m2Safe, m2Safe, settler, issuerSafe, usdc) // avatar, owner, settler, issuerSafe, usdc
@@ -225,12 +273,42 @@ contract SafeFactory is ISafeFactory, Ownable {
         if (spendSettlerAddr == address(0)) revert DeploymentFailed();
 
         // Enable SpendSettler as module on the Safe
-        // The Safe was just deployed and we're in the same tx, so we can call enableModule
-        // directly since no threshold-based execution is needed yet
         ISafe(m2Safe).enableModule(spendSettlerAddr);
-
-        // Track the settler for this Safe
         safeToSettler[m2Safe] = spendSettlerAddr;
+
+        // (b) Deploy Roles Module via EIP-1167 clone (if impl is set)
+        if (rolesModuleImplementation != address(0)) {
+            bytes32 rolesSalt = keccak256(abi.encodePacked(salt, "roles"));
+            address rolesModule = Clones.cloneDeterministic(rolesModuleImplementation, rolesSalt);
+            if (rolesModule == address(0)) revert DeploymentFailed();
+
+            // Initialize the Roles Module clone: owner=Safe, avatar=Safe, target=Safe
+            (bool success,) =
+                rolesModule.call(abi.encodeWithSignature("setUp(address,address,address)", m2Safe, m2Safe, m2Safe));
+            if (!success) revert DeploymentFailed();
+
+            ISafe(m2Safe).enableModule(rolesModule);
+            safeToRoles[m2Safe] = rolesModule;
+
+            emit RolesModuleDeployed(m2Safe, rolesModule);
+        }
+
+        // (c) Deploy Delay Module via EIP-1167 clone (if impl is set)
+        if (delayModuleImplementation != address(0)) {
+            bytes32 delaySalt = keccak256(abi.encodePacked(salt, "delay"));
+            address delayModule = Clones.cloneDeterministic(delayModuleImplementation, delaySalt);
+            if (delayModule == address(0)) revert DeploymentFailed();
+
+            // Initialize the Delay Module clone: owner=Safe, avatar=Safe, target=Safe
+            (bool success,) =
+                delayModule.call(abi.encodeWithSignature("setUp(address,address,address)", m2Safe, m2Safe, m2Safe));
+            if (!success) revert DeploymentFailed();
+
+            ISafe(m2Safe).enableModule(delayModule);
+            safeToDelay[m2Safe] = delayModule;
+
+            emit DelayModuleDeployed(m2Safe, delayModule);
+        }
     }
 
     // ============ View Functions ============
@@ -261,5 +339,19 @@ contract SafeFactory is ISafeFactory, Ownable {
     /// @return settlerModule The SpendSettler address (address(0) if none)
     function getSettlerForSafe(address m2Safe) external view returns (address) {
         return safeToSettler[m2Safe];
+    }
+
+    /// @notice Get the Roles Module for a deployed Safe
+    /// @param m2Safe The Safe address
+    /// @return rolesModule The Roles Module address (address(0) if none)
+    function getRolesForSafe(address m2Safe) external view returns (address) {
+        return safeToRoles[m2Safe];
+    }
+
+    /// @notice Get the Delay Module for a deployed Safe
+    /// @param m2Safe The Safe address
+    /// @return delayModule The Delay Module address (address(0) if none)
+    function getDelayForSafe(address m2Safe) external view returns (address) {
+        return safeToDelay[m2Safe];
     }
 }

@@ -43,6 +43,9 @@ contract SpendSettler is Module, ReentrancyGuard, Pausable, ISpendSettler {
     /// @notice Total USDC settled through this module
     uint256 public totalSettled;
 
+    /// @notice Maximum amount allowed per single settlement
+    uint256 public maxSettleAmount;
+
     /// @notice Idempotency: tracks settled Lithic transaction tokens
     mapping(bytes32 => bool) public settledTxTokens;
 
@@ -66,6 +69,8 @@ contract SpendSettler is Module, ReentrancyGuard, Pausable, ISpendSettler {
     error InvalidIssuerSafe();
     error InvalidUsdcAddress();
     error TooManySpendRecords();
+    error AmountTooLarge();
+    error AmountExceedsMaxSettle(uint256 amount, uint256 max);
 
     // ============ Events ============
 
@@ -96,6 +101,7 @@ contract SpendSettler is Module, ReentrancyGuard, Pausable, ISpendSettler {
         settler = _settler;
         issuerSafe = _issuerSafe;
         usdc = _usdc;
+        maxSettleAmount = type(uint256).max;
 
         emit SettlerUpdated(address(0), _settler);
         emit IssuerSafeUpdated(address(0), _issuerSafe);
@@ -119,6 +125,7 @@ contract SpendSettler is Module, ReentrancyGuard, Pausable, ISpendSettler {
     /// @inheritdoc ISpendSettler
     function settle(uint256 amount, bytes32 lithicTxToken) external override onlySettler nonReentrant whenNotPaused {
         if (amount == 0) revert ZeroAmount();
+        if (amount > maxSettleAmount) revert AmountExceedsMaxSettle(amount, maxSettleAmount);
         if (settledTxTokens[lithicTxToken]) revert AlreadySettled(lithicTxToken);
 
         // Mark as settled (idempotency)
@@ -136,8 +143,8 @@ contract SpendSettler is Module, ReentrancyGuard, Pausable, ISpendSettler {
         uint256 currentNonce;
         unchecked {
             currentNonce = nonce++;
-            totalSettled += amount;
         }
+        totalSettled += amount;
 
         emit SpendSettled(avatar, issuerSafe, amount, lithicTxToken, currentNonce);
     }
@@ -163,6 +170,11 @@ contract SpendSettler is Module, ReentrancyGuard, Pausable, ISpendSettler {
         address prev = usdc;
         usdc = _usdc;
         emit UsdcAddressUpdated(prev, _usdc);
+    }
+
+    function setMaxSettleAmount(uint256 _max) external onlyOwner {
+        maxSettleAmount = _max;
+        emit MaxSettleAmountUpdated(_max);
     }
 
     // ============ View Functions ============
@@ -221,6 +233,7 @@ contract SpendSettler is Module, ReentrancyGuard, Pausable, ISpendSettler {
         uint256 activeRecords = length - start;
         if (activeRecords >= MAX_RECORDS) revert TooManySpendRecords();
 
+        if (amount > type(uint128).max) revert AmountTooLarge();
         _spendHistory.push(SpendRecord({amount: uint128(amount), timestamp: uint128(block.timestamp)}));
     }
 }

@@ -96,14 +96,22 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
         bool approveSuccess = exec(underlying, 0, approveData, ISafe.Operation.Call);
         if (!approveSuccess) revert ExecutionFailed();
 
-        // Step 2: Deposit into Morpho vault with Safe as receiver
+        // Step 2: Snapshot shares before deposit
+        uint256 sharesBefore = IMorphoVault(vault).balanceOf(avatar);
+
+        // Step 3: Deposit into Morpho vault with Safe as receiver
         bytes memory depositData = abi.encodeWithSelector(IMorphoVault.deposit.selector, assets, avatar);
         bool depositSuccess = exec(vault, 0, depositData, ISafe.Operation.Call);
         if (!depositSuccess) revert ExecutionFailed();
 
-        // Note: shares returned from deposit are captured via vault.balanceOf in tests
-        // We emit with expected shares from convertToShares for event tracking
-        shares = IMorphoVault(vault).convertToShares(assets);
+        // Step 4: Reset approval to 0 to prevent lingering allowance
+        bytes memory resetApproval = abi.encodeWithSelector(IERC20.approve.selector, vault, uint256(0));
+        exec(underlying, 0, resetApproval, ISafe.Operation.Call);
+        // Don't check return — best effort, some tokens don't support approve(0)
+
+        // Step 5: Compute actual shares minted via balance snapshot
+        uint256 sharesAfter = IMorphoVault(vault).balanceOf(avatar);
+        shares = sharesAfter - sharesBefore;
 
         emit MorphoDeposit(vault, assets, shares);
     }
@@ -123,13 +131,17 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
         if (assets == 0) revert ZeroAmount();
         _requireAllowlisted(vault);
 
+        // Snapshot shares before withdrawal
+        uint256 sharesBefore = IMorphoVault(vault).balanceOf(avatar);
+
         // Withdraw from Morpho vault — receiver and owner are both the Safe (avatar)
         bytes memory withdrawData = abi.encodeWithSelector(IMorphoVault.withdraw.selector, assets, avatar, avatar);
         bool success = exec(vault, 0, withdrawData, ISafe.Operation.Call);
         if (!success) revert ExecutionFailed();
 
-        // Estimate shares burned for event tracking
-        sharesBurned = IMorphoVault(vault).convertToShares(assets);
+        // Compute actual shares burned via balance snapshot
+        uint256 sharesAfter = IMorphoVault(vault).balanceOf(avatar);
+        sharesBurned = sharesBefore - sharesAfter;
 
         emit MorphoWithdraw(vault, assets, sharesBurned);
     }
@@ -149,13 +161,18 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
         if (shares == 0) revert ZeroAmount();
         _requireAllowlisted(vault);
 
+        // Snapshot underlying balance before redemption
+        address underlying = IMorphoVault(vault).asset();
+        uint256 assetsBefore = IERC20(underlying).balanceOf(avatar);
+
         // Redeem shares from Morpho vault — receiver and owner are both the Safe (avatar)
         bytes memory redeemData = abi.encodeWithSelector(IMorphoVault.redeem.selector, shares, avatar, avatar);
         bool success = exec(vault, 0, redeemData, ISafe.Operation.Call);
         if (!success) revert ExecutionFailed();
 
-        // Estimate assets received for event tracking
-        assetsReceived = IMorphoVault(vault).previewRedeem(shares);
+        // Compute actual assets received via balance snapshot
+        uint256 assetsAfter = IERC20(underlying).balanceOf(avatar);
+        assetsReceived = assetsAfter - assetsBefore;
 
         emit MorphoRedeem(vault, shares, assetsReceived);
     }
@@ -186,6 +203,11 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
         bool supplySuccess = exec(pool, 0, supplyData, ISafe.Operation.Call);
         if (!supplySuccess) revert ExecutionFailed();
 
+        // Step 3: Reset approval to 0 to prevent lingering allowance
+        bytes memory resetApproval = abi.encodeWithSelector(IERC20.approve.selector, pool, uint256(0));
+        exec(asset, 0, resetApproval, ISafe.Operation.Call);
+        // Don't check return — best effort, some tokens don't support approve(0)
+
         emit AaveSupply(pool, asset, amount);
     }
 
@@ -205,13 +227,17 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
         if (amount == 0) revert ZeroAmount();
         _requireAllowlisted(pool);
 
+        // Snapshot balance before withdrawal
+        uint256 balanceBefore = IERC20(asset).balanceOf(avatar);
+
         // Withdraw from Aave with Safe (avatar) as the recipient
         bytes memory withdrawData = abi.encodeWithSelector(IAavePool.withdraw.selector, asset, amount, avatar);
         bool success = exec(pool, 0, withdrawData, ISafe.Operation.Call);
         if (!success) revert ExecutionFailed();
 
-        // The actual withdrawn amount is returned by the pool
-        withdrawn = amount;
+        // Compute actual withdrawn amount via balance snapshot
+        uint256 balanceAfter = IERC20(asset).balanceOf(avatar);
+        withdrawn = balanceAfter - balanceBefore;
 
         emit AaveWithdraw(pool, asset, amount, withdrawn);
     }

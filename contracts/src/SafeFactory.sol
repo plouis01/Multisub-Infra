@@ -233,8 +233,11 @@ contract SafeFactory is ISafeFactory, Ownable {
             );
 
         // Step 3: Deploy and configure modules for Model A
+        address settlerAddr;
+        address rolesAddr;
+        address delayAddr;
         if (custodyModel == uint8(CustodyModel.MODEL_A)) {
-            _deployModules(m2Safe, salt);
+            (settlerAddr, rolesAddr, delayAddr) = _deployModules(m2Safe, salt);
         }
         // Model B: user-custodial, no automatic module setup
 
@@ -247,7 +250,7 @@ contract SafeFactory is ISafeFactory, Ownable {
         // Step 5: Auto-register in TenantRegistry
         registry.registerUser(tenantId, m2Safe);
 
-        emit SafeDeployed(tenantId, userSigner, m2Safe, custodyModel);
+        emit SafeDeployed(tenantId, userSigner, m2Safe, custodyModel, settlerAddr, rolesAddr, delayAddr);
 
         return m2Safe;
     }
@@ -259,7 +262,10 @@ contract SafeFactory is ISafeFactory, Ownable {
     ///      Roles/Delay deployment is skipped if their implementation is address(0).
     /// @param m2Safe The Safe to attach modules to
     /// @param salt The salt for deterministic deployment
-    function _deployModules(address m2Safe, bytes32 salt) internal {
+    function _deployModules(address m2Safe, bytes32 salt)
+        internal
+        returns (address _settler, address _roles, address _delay)
+    {
         // (a) Deploy SpendSettler via CREATE2 with constructor args
         bytes memory bytecode = abi.encodePacked(
             type(SpendSettler).creationCode,
@@ -275,6 +281,7 @@ contract SafeFactory is ISafeFactory, Ownable {
         // Enable SpendSettler as module on the Safe
         ISafe(m2Safe).enableModule(spendSettlerAddr);
         safeToSettler[m2Safe] = spendSettlerAddr;
+        _settler = spendSettlerAddr;
 
         // (b) Deploy Roles Module via EIP-1167 clone (if impl is set)
         if (rolesModuleImplementation != address(0)) {
@@ -289,6 +296,7 @@ contract SafeFactory is ISafeFactory, Ownable {
 
             ISafe(m2Safe).enableModule(rolesModule);
             safeToRoles[m2Safe] = rolesModule;
+            _roles = rolesModule;
 
             emit RolesModuleDeployed(m2Safe, rolesModule);
         }
@@ -306,6 +314,7 @@ contract SafeFactory is ISafeFactory, Ownable {
 
             ISafe(m2Safe).enableModule(delayModule);
             safeToDelay[m2Safe] = delayModule;
+            _delay = delayModule;
 
             emit DelayModuleDeployed(m2Safe, delayModule);
         }

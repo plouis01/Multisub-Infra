@@ -12,6 +12,7 @@ interface ISpendSettler {
     event SettlerUpdated(address indexed previousSettler, address indexed newSettler);
     event IssuerSafeUpdated(address indexed previousIssuer, address indexed newIssuer);
     event UsdcAddressUpdated(address indexed previousUsdc, address indexed newUsdc);
+    event MaxSettleAmountUpdated(uint256 newMax);
 
     // ============ Core Settlement ============
 

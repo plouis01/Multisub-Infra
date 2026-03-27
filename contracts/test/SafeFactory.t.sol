@@ -234,14 +234,20 @@ contract SafeFactoryTest is Test {
     }
 
     function test_deploySafe_modelB_emitsEvent() public {
-        vm.expectEmit(true, true, false, true);
-        // We don't know the Safe address yet, so we check tenantId, userSigner, and custodyModel
-        // The m2Safe address (3rd indexed param) will be checked implicitly
-        emit ISafeFactory.SafeDeployed(tenantId, userSigner, address(0), uint8(ISafeFactory.CustodyModel.MODEL_B));
+        vm.expectEmit(true, true, false, false);
+        // We don't know the Safe address yet, so we check tenantId and userSigner (indexed).
+        // Model B has no modules, so all module addresses are address(0).
+        emit ISafeFactory.SafeDeployed(
+            tenantId,
+            userSigner,
+            address(0),
+            uint8(ISafeFactory.CustodyModel.MODEL_B),
+            address(0),
+            address(0),
+            address(0)
+        );
 
         vm.prank(owner);
-        // Note: The event check above is partial — we only verify indexed tenantId and userSigner.
-        // The m2Safe address is non-deterministic in emission check order.
         factory.deploySafe(tenantId, userSigner, uint8(ISafeFactory.CustodyModel.MODEL_B));
     }
 

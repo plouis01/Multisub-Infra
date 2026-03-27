@@ -37,6 +37,11 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
     /// @notice Total USDC deposited across all tenants
     uint256 public totalDeposited;
 
+    // ============ Constants ============
+
+    /// @notice Maximum number of tenants per snapshotYield batch to prevent DoS via gas exhaustion
+    uint256 public constant MAX_SNAPSHOT_BATCH = 100;
+
     // ============ Errors ============
 
     error OnlyOperator();
@@ -49,6 +54,8 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
     error InsufficientShares(bytes32 tenantId, uint256 requested, uint256 available);
     error InsufficientDeposited(bytes32 tenantId, uint256 requested, uint256 available);
     error ExecutionFailed();
+    error BatchTooLarge(uint256 provided, uint256 max);
+    error PositionsExist(uint256 totalShares);
 
     // ============ Events ============
 
@@ -118,6 +125,9 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
         if (tenantId == bytes32(0)) revert ZeroTenantId();
         if (usdcAmount == 0) revert ZeroAmount();
 
+        // Snapshot share balance before deposit
+        uint256 sharesBefore = IMorphoVault(morphoVault).balanceOf(avatar);
+
         // Step 1: Approve the Morpho vault to spend USDC from the Safe
         bytes memory approveData = abi.encodeWithSelector(IERC20.approve.selector, morphoVault, usdcAmount);
         bool approveSuccess = exec(usdc, 0, approveData, ISafe.Operation.Call);
@@ -128,8 +138,9 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
         bool depositSuccess = exec(morphoVault, 0, depositData, ISafe.Operation.Call);
         if (!depositSuccess) revert ExecutionFailed();
 
-        // Calculate shares minted (using convertToShares as approximation)
-        shares = IMorphoVault(morphoVault).convertToShares(usdcAmount);
+        // Measure actual shares minted via before/after balance snapshot
+        uint256 sharesAfter = IMorphoVault(morphoVault).balanceOf(avatar);
+        shares = sharesAfter - sharesBefore;
 
         // Update tenant position
         TenantPosition storage pos = _tenantPositions[tenantId];
@@ -160,16 +171,22 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
 
         TenantPosition storage pos = _tenantPositions[tenantId];
 
-        // Calculate shares needed for this withdrawal
-        sharesBurned = IMorphoVault(morphoVault).convertToShares(usdcAmount);
-        if (sharesBurned > pos.shares) {
-            revert InsufficientShares(tenantId, sharesBurned, pos.shares);
-        }
+        // Snapshot share balance before withdrawal
+        uint256 sharesBefore = IMorphoVault(morphoVault).balanceOf(avatar);
 
         // Withdraw from Morpho vault — receiver and owner are both the Safe (avatar)
         bytes memory withdrawData = abi.encodeWithSelector(IMorphoVault.withdraw.selector, usdcAmount, avatar, avatar);
         bool success = exec(morphoVault, 0, withdrawData, ISafe.Operation.Call);
         if (!success) revert ExecutionFailed();
+
+        // Measure actual shares burned via before/after balance snapshot
+        uint256 sharesAfter = IMorphoVault(morphoVault).balanceOf(avatar);
+        sharesBurned = sharesBefore - sharesAfter;
+
+        // Validate tenant has enough shares (post-withdraw check)
+        if (sharesBurned > pos.shares) {
+            revert InsufficientShares(tenantId, sharesBurned, pos.shares);
+        }
 
         // Update tenant position
         pos.shares -= sharesBurned;
@@ -183,6 +200,49 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
         totalDeposited -= depositReduction;
 
         emit TenantWithdraw(tenantId, usdcAmount, sharesBurned);
+    }
+
+    /// @notice Redeem shares from the Morpho vault on behalf of a tenant (for loss scenarios)
+    /// @dev Use when the vault has lost value and withdrawing by USDC amount would fail
+    /// @param tenantId The tenant identifier
+    /// @param shares Amount of Morpho vault shares to redeem
+    /// @return assetsReceived Amount of USDC received from the redemption
+    function redeemForTenant(bytes32 tenantId, uint256 shares)
+        external
+        onlyOperator
+        nonReentrant
+        whenNotPaused
+        returns (uint256 assetsReceived)
+    {
+        if (tenantId == bytes32(0)) revert ZeroTenantId();
+        if (shares == 0) revert ZeroAmount();
+
+        TenantPosition storage pos = _tenantPositions[tenantId];
+        if (shares > pos.shares) revert InsufficientShares(tenantId, shares, pos.shares);
+
+        uint256 assetsBefore = IERC20(usdc).balanceOf(avatar);
+
+        bytes memory redeemData = abi.encodeWithSelector(IMorphoVault.redeem.selector, shares, avatar, avatar);
+        bool success = exec(morphoVault, 0, redeemData, ISafe.Operation.Call);
+        if (!success) revert ExecutionFailed();
+
+        uint256 assetsAfter = IERC20(usdc).balanceOf(avatar);
+        assetsReceived = assetsAfter - assetsBefore;
+
+        // Update tenant position
+        pos.shares -= shares;
+        uint256 depositReduction = assetsReceived > pos.depositedAmount ? pos.depositedAmount : assetsReceived;
+        pos.depositedAmount -= depositReduction;
+
+        // Update global totals
+        totalTenantShares -= shares;
+        if (depositReduction > totalDeposited) {
+            totalDeposited = 0;
+        } else {
+            totalDeposited -= depositReduction;
+        }
+
+        emit TenantWithdraw(tenantId, assetsReceived, shares);
     }
 
     // ============ Yield Functions ============
@@ -207,6 +267,8 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
     /// @dev Called every 4h by the yield manager service
     /// @param tenantIds Array of tenant identifiers to snapshot
     function snapshotYield(bytes32[] calldata tenantIds) external override onlyOperatorOrOwner whenNotPaused {
+        if (tenantIds.length > MAX_SNAPSHOT_BATCH) revert BatchTooLarge(tenantIds.length, MAX_SNAPSHOT_BATCH);
+
         for (uint256 i = 0; i < tenantIds.length; i++) {
             bytes32 tenantId = tenantIds[i];
             TenantPosition storage pos = _tenantPositions[tenantId];
@@ -240,9 +302,11 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
     }
 
     /// @notice Update the Morpho vault address
+    /// @dev Reverts if any tenant positions exist to prevent share accounting corruption
     /// @param newVault The new Morpho vault address
     function setMorphoVault(address newVault) external onlyOwner {
         if (newVault == address(0)) revert InvalidMorphoVault();
+        if (totalTenantShares > 0) revert PositionsExist(totalTenantShares);
         address oldVault = morphoVault;
         morphoVault = newVault;
         emit MorphoVaultUpdated(oldVault, newVault);

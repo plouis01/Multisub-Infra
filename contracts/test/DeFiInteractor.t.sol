@@ -529,7 +529,16 @@ contract DeFiInteractorTest is Test {
         address newOwner = address(0x99);
         vm.prank(owner);
         interactor.transferOwnership(newOwner);
+
+        // Owner has not changed yet (two-step)
+        assertEq(interactor.owner(), owner);
+        assertEq(interactor.pendingOwner(), newOwner);
+
+        // New owner accepts ownership
+        vm.prank(newOwner);
+        interactor.acceptOwnership();
         assertEq(interactor.owner(), newOwner);
+        assertEq(interactor.pendingOwner(), address(0));
 
         // Old owner cannot manage vaults
         vm.expectRevert();

@@ -17,7 +17,13 @@ interface ISafeFactory {
 
     /// @notice Emitted when a new M2 Safe is deployed
     event SafeDeployed(
-        bytes32 indexed tenantId, address indexed userSigner, address indexed m2Safe, uint8 custodyModel
+        bytes32 indexed tenantId,
+        address indexed userSigner,
+        address m2Safe,
+        uint8 custodyModel,
+        address spendSettler,
+        address rolesModule,
+        address delayModule
     );
 
     /// @notice Emitted when the registry address is updated

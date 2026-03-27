@@ -9,10 +9,12 @@ abstract contract Module {
     address public avatar;
     address public target;
     address public owner;
+    address public pendingOwner;
 
     event AvatarSet(address indexed previousAvatar, address indexed newAvatar);
     event TargetSet(address indexed previousTarget, address indexed newTarget);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
 
     error Unauthorized();
     error InvalidAddress();
@@ -52,9 +54,16 @@ abstract contract Module {
 
     function transferOwnership(address _newOwner) public onlyOwner {
         if (_newOwner == address(0)) revert InvalidAddress();
+        pendingOwner = _newOwner;
+        emit OwnershipTransferStarted(owner, _newOwner);
+    }
+
+    function acceptOwnership() public {
+        if (msg.sender != pendingOwner) revert Unauthorized();
         address prev = owner;
-        owner = _newOwner;
-        emit OwnershipTransferred(prev, _newOwner);
+        owner = pendingOwner;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(prev, owner);
     }
 
     function exec(address to, uint256 value, bytes memory data, ISafe.Operation operation)

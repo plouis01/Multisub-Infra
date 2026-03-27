@@ -29,6 +29,7 @@ interface ITreasuryVault {
 
     function depositForTenant(bytes32 tenantId, uint256 usdcAmount) external returns (uint256 shares);
     function withdrawForTenant(bytes32 tenantId, uint256 usdcAmount) external returns (uint256 sharesBurned);
+    function redeemForTenant(bytes32 tenantId, uint256 shares) external returns (uint256 assetsReceived);
 
     // ============ Yield Functions ============
 

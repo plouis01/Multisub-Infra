@@ -369,7 +369,16 @@ contract SpendSettlerTest is Test {
         address newOwner = address(0x99);
         vm.prank(owner);
         settler.transferOwnership(newOwner);
+
+        // Owner has not changed yet (two-step)
+        assertEq(settler.owner(), owner);
+        assertEq(settler.pendingOwner(), newOwner);
+
+        // New owner accepts ownership
+        vm.prank(newOwner);
+        settler.acceptOwnership();
         assertEq(settler.owner(), newOwner);
+        assertEq(settler.pendingOwner(), address(0));
 
         // Old owner can no longer pause
         vm.expectRevert();
@@ -379,5 +388,56 @@ contract SpendSettlerTest is Test {
         // New owner can pause
         vm.prank(newOwner);
         settler.pause();
+    }
+
+    // ============ Max Settle Amount Tests ============
+
+    function test_maxSettleAmount_defaultIsMaxUint() public view {
+        assertEq(settler.maxSettleAmount(), type(uint256).max);
+    }
+
+    function test_setMaxSettleAmount_updatesMax() public {
+        vm.prank(owner);
+        settler.setMaxSettleAmount(1_000e6);
+        assertEq(settler.maxSettleAmount(), 1_000e6);
+    }
+
+    function test_setMaxSettleAmount_onlyOwner() public {
+        vm.expectRevert();
+        vm.prank(attacker);
+        settler.setMaxSettleAmount(1_000e6);
+    }
+
+    function test_settle_revertsWhenAmountExceedsMaxSettle() public {
+        vm.prank(owner);
+        settler.setMaxSettleAmount(500e6);
+
+        vm.expectRevert(abi.encodeWithSelector(SpendSettler.AmountExceedsMaxSettle.selector, 1_000e6, 500e6));
+        vm.prank(settlerEOA);
+        settler.settle(1_000e6, keccak256("tx-over-max"));
+    }
+
+    function test_settle_succeedsAtExactMaxSettle() public {
+        vm.prank(owner);
+        settler.setMaxSettleAmount(500e6);
+
+        vm.prank(settlerEOA);
+        settler.settle(500e6, keccak256("tx-at-max"));
+        assertEq(usdc.balanceOf(issuerSafe), 500e6);
+    }
+
+    // ============ AmountTooLarge Tests ============
+
+    function test_settle_revertsOnAmountTooLargeForUint128() public {
+        // amount > type(uint128).max should revert with AmountTooLarge
+        uint256 tooLarge = uint256(type(uint128).max) + 1;
+
+        // Set maxSettleAmount high enough so it doesn't block first
+        vm.prank(owner);
+        settler.setMaxSettleAmount(type(uint256).max);
+
+        vm.expectRevert(SpendSettler.AmountTooLarge.selector);
+        vm.prank(settlerEOA);
+        settler.settle(tooLarge, keccak256("tx-too-large"));
     }
 }

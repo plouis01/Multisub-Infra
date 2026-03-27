@@ -180,12 +180,9 @@ contract TreasuryVaultTest is Test {
         vm.prank(operatorEOA);
         vault.depositForTenant(tenantA, 10_000e6);
 
-        // Try to withdraw 20k (more shares than available)
-        uint256 shares = vault.getTenantShares(tenantA);
-        uint256 neededShares = morphoVault.convertToShares(20_000e6);
-        vm.expectRevert(
-            abi.encodeWithSelector(TreasuryVault.InsufficientShares.selector, tenantA, neededShares, shares)
-        );
+        // Try to withdraw 20k (more shares than the Safe holds in the Morpho vault)
+        // The underlying vault reverts, causing exec to return false -> ExecutionFailed
+        vm.expectRevert(TreasuryVault.ExecutionFailed.selector);
         vm.prank(operatorEOA);
         vault.withdrawForTenant(tenantA, 20_000e6);
     }
@@ -558,7 +555,16 @@ contract TreasuryVaultTest is Test {
         address newOwner = address(0x99);
         vm.prank(owner);
         vault.transferOwnership(newOwner);
+
+        // Owner has not changed yet (two-step)
+        assertEq(vault.owner(), owner);
+        assertEq(vault.pendingOwner(), newOwner);
+
+        // New owner accepts ownership
+        vm.prank(newOwner);
+        vault.acceptOwnership();
         assertEq(vault.owner(), newOwner);
+        assertEq(vault.pendingOwner(), address(0));
 
         // Old owner cannot configure
         vm.expectRevert();
@@ -624,5 +630,219 @@ contract TreasuryVaultTest is Test {
         assertEq(vault.getTenantDeposited(tenantA), amountA);
         assertEq(vault.getTenantDeposited(tenantB), amountB);
         assertEq(vault.totalDeposited(), uint256(amountA) + uint256(amountB));
+    }
+
+    // ============ Fix C-3: Before/After Share Snapshot Tests ============
+
+    function test_depositForTenant_usesBalanceSnapshot() public {
+        // Verify shares are measured via before/after balanceOf, not convertToShares
+        uint256 amount = 10_000e6;
+
+        // At 1:1 rate, both methods should agree
+        vm.prank(operatorEOA);
+        uint256 shares = vault.depositForTenant(tenantA, amount);
+
+        // The actual shares in the morpho vault for the safe should match tracked shares
+        assertEq(morphoVault.balanceOf(address(safe)), vault.totalTenantShares());
+        assertEq(shares, morphoVault.balanceOf(address(safe)));
+    }
+
+    function test_withdrawForTenant_usesBalanceSnapshot() public {
+        vm.prank(operatorEOA);
+        vault.depositForTenant(tenantA, 50_000e6);
+
+        uint256 morphoSharesBefore = morphoVault.balanceOf(address(safe));
+
+        vm.prank(operatorEOA);
+        uint256 sharesBurned = vault.withdrawForTenant(tenantA, 25_000e6);
+
+        uint256 morphoSharesAfter = morphoVault.balanceOf(address(safe));
+        // The reported sharesBurned should match the actual change in morpho vault balance
+        assertEq(sharesBurned, morphoSharesBefore - morphoSharesAfter);
+    }
+
+    // ============ Fix H-4: MAX_SNAPSHOT_BATCH Tests ============
+
+    function test_snapshotYield_revertsOnBatchTooLarge() public {
+        bytes32[] memory tenantIds = new bytes32[](101);
+        for (uint256 i = 0; i < 101; i++) {
+            tenantIds[i] = keccak256(abi.encodePacked("tenant", i));
+        }
+
+        vm.expectRevert(abi.encodeWithSelector(TreasuryVault.BatchTooLarge.selector, 101, 100));
+        vm.prank(operatorEOA);
+        vault.snapshotYield(tenantIds);
+    }
+
+    function test_snapshotYield_allowsMaxBatchSize() public {
+        bytes32[] memory tenantIds = new bytes32[](100);
+        for (uint256 i = 0; i < 100; i++) {
+            tenantIds[i] = keccak256(abi.encodePacked("tenant", i));
+        }
+
+        // Should not revert (no deposits, so snapshots are skipped but batch size is valid)
+        vm.prank(operatorEOA);
+        vault.snapshotYield(tenantIds);
+    }
+
+    function test_MAX_SNAPSHOT_BATCH_isPublic() public view {
+        assertEq(vault.MAX_SNAPSHOT_BATCH(), 100);
+    }
+
+    // ============ Fix H-8: Vault Migration Blocked With Positions ============
+
+    function test_setMorphoVault_revertsWhenPositionsExist() public {
+        // Deposit to create positions
+        vm.prank(operatorEOA);
+        vault.depositForTenant(tenantA, 10_000e6);
+
+        uint256 totalShares = vault.totalTenantShares();
+        assertGt(totalShares, 0);
+
+        // Attempt migration should fail
+        vm.expectRevert(abi.encodeWithSelector(TreasuryVault.PositionsExist.selector, totalShares));
+        vm.prank(owner);
+        vault.setMorphoVault(address(0xFF));
+    }
+
+    function test_setMorphoVault_allowsWhenNoPositions() public {
+        // No deposits, so migration should succeed
+        assertEq(vault.totalTenantShares(), 0);
+
+        address newVault = address(0xFF);
+        vm.prank(owner);
+        vault.setMorphoVault(newVault);
+        assertEq(vault.morphoVault(), newVault);
+    }
+
+    function test_setMorphoVault_allowsAfterFullWithdrawal() public {
+        // Deposit then fully withdraw
+        vm.startPrank(operatorEOA);
+        vault.depositForTenant(tenantA, 10_000e6);
+        vault.withdrawForTenant(tenantA, 10_000e6);
+        vm.stopPrank();
+
+        assertEq(vault.totalTenantShares(), 0);
+
+        // Migration should now succeed
+        address newVault = address(0xFF);
+        vm.prank(owner);
+        vault.setMorphoVault(newVault);
+        assertEq(vault.morphoVault(), newVault);
+    }
+
+    // ============ Fix M-10: redeemForTenant Tests ============
+
+    function test_redeemForTenant_redeemsByShareCount() public {
+        // Deposit 100k at 1:1 rate
+        vm.prank(operatorEOA);
+        uint256 depositShares = vault.depositForTenant(tenantA, 100_000e6);
+
+        uint256 safeBalanceBefore = usdc.balanceOf(address(safe));
+
+        // Redeem half the shares
+        uint256 redeemShares = depositShares / 2;
+        vm.prank(operatorEOA);
+        uint256 assetsReceived = vault.redeemForTenant(tenantA, redeemShares);
+
+        // At 1:1 rate, assets should equal shares
+        assertEq(assetsReceived, 50_000e6);
+        assertEq(usdc.balanceOf(address(safe)), safeBalanceBefore + assetsReceived);
+        assertEq(vault.getTenantShares(tenantA), depositShares - redeemShares);
+        assertEq(vault.getTenantDeposited(tenantA), 50_000e6);
+    }
+
+    function test_redeemForTenant_worksInLossScenario() public {
+        // Deposit 100k at 1:1 rate
+        vm.prank(operatorEOA);
+        uint256 depositShares = vault.depositForTenant(tenantA, 100_000e6);
+
+        // Simulate 10% loss
+        morphoVault.setExchangeRate(900_000); // 0.9x
+
+        uint256 safeBalanceBefore = usdc.balanceOf(address(safe));
+
+        // Redeem all shares — should get back 90k (10% loss)
+        vm.prank(operatorEOA);
+        uint256 assetsReceived = vault.redeemForTenant(tenantA, depositShares);
+
+        // At 0.9x rate, assets = shares * 0.9
+        assertEq(assetsReceived, 90_000e6);
+        assertEq(usdc.balanceOf(address(safe)), safeBalanceBefore + assetsReceived);
+        assertEq(vault.getTenantShares(tenantA), 0);
+        // depositedAmount should be reduced by assetsReceived (capped at depositedAmount)
+        assertEq(vault.getTenantDeposited(tenantA), 10_000e6); // 100k - 90k
+    }
+
+    function test_redeemForTenant_emitsEvent() public {
+        vm.prank(operatorEOA);
+        uint256 depositShares = vault.depositForTenant(tenantA, 10_000e6);
+
+        uint256 redeemShares = depositShares / 2;
+        uint256 expectedAssets = morphoVault.convertToAssets(redeemShares);
+
+        vm.expectEmit(true, false, false, true);
+        emit ITreasuryVault.TenantWithdraw(tenantA, expectedAssets, redeemShares);
+
+        vm.prank(operatorEOA);
+        vault.redeemForTenant(tenantA, redeemShares);
+    }
+
+    function test_redeemForTenant_revertsOnInsufficientShares() public {
+        vm.prank(operatorEOA);
+        uint256 depositShares = vault.depositForTenant(tenantA, 10_000e6);
+
+        uint256 tooManyShares = depositShares + 1;
+        vm.expectRevert(
+            abi.encodeWithSelector(TreasuryVault.InsufficientShares.selector, tenantA, tooManyShares, depositShares)
+        );
+        vm.prank(operatorEOA);
+        vault.redeemForTenant(tenantA, tooManyShares);
+    }
+
+    function test_redeemForTenant_revertsOnZeroShares() public {
+        vm.expectRevert(TreasuryVault.ZeroAmount.selector);
+        vm.prank(operatorEOA);
+        vault.redeemForTenant(tenantA, 0);
+    }
+
+    function test_redeemForTenant_revertsOnZeroTenantId() public {
+        vm.expectRevert(TreasuryVault.ZeroTenantId.selector);
+        vm.prank(operatorEOA);
+        vault.redeemForTenant(bytes32(0), 1000);
+    }
+
+    function test_redeemForTenant_revertsForNonOperator() public {
+        vm.expectRevert(TreasuryVault.OnlyOperator.selector);
+        vm.prank(attacker);
+        vault.redeemForTenant(tenantA, 1000);
+    }
+
+    function test_redeemForTenant_updatesTotals() public {
+        vm.startPrank(operatorEOA);
+        uint256 sharesA = vault.depositForTenant(tenantA, 100_000e6);
+        vault.depositForTenant(tenantB, 50_000e6);
+        vm.stopPrank();
+
+        uint256 totalSharesBefore = vault.totalTenantShares();
+        uint256 totalDepositedBefore = vault.totalDeposited();
+
+        vm.prank(operatorEOA);
+        uint256 assetsReceived = vault.redeemForTenant(tenantA, sharesA);
+
+        assertEq(vault.totalTenantShares(), totalSharesBefore - sharesA);
+        assertEq(vault.totalDeposited(), totalDepositedBefore - assetsReceived);
+    }
+
+    function test_redeemForTenant_pausePreventsRedeem() public {
+        vm.prank(operatorEOA);
+        vault.depositForTenant(tenantA, 10_000e6);
+
+        vm.prank(owner);
+        vault.pause();
+
+        vm.expectRevert();
+        vm.prank(operatorEOA);
+        vault.redeemForTenant(tenantA, 1000);
     }
 }

@@ -284,7 +284,7 @@ describe("Redis helper functions", () => {
       expect(result!.status).toBe("frozen");
     });
 
-    it("stores to the correct Redis key", async () => {
+    it("stores to the correct Redis key with TTL", async () => {
       const mapping = createTestCardMapping();
 
       await setCardMapping(redis as any, "card-abc-123", mapping);
@@ -292,6 +292,8 @@ describe("Redis helper functions", () => {
       expect(redis.set).toHaveBeenCalledWith(
         "card:card-abc-123",
         JSON.stringify(mapping),
+        "EX",
+        86400,
       );
     });
 

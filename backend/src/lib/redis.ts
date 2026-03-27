@@ -88,6 +88,60 @@ export async function updateAuthCacheSpend(
   return result;
 }
 
+// ============ Atomic Spend (Lua Script) ============
+
+const SPEND_LUA_SCRIPT = `
+local key = KEYS[1]
+local amountCents = tonumber(ARGV[1])
+local raw = redis.call('GET', key)
+if not raw then return nil end
+
+local cache = cjson.decode(raw)
+local balance = tonumber(cache.usdcBalance)
+local dailySpent = tonumber(cache.dailySpent)
+local monthlySpent = tonumber(cache.monthlySpent)
+local dailyLimit = tonumber(cache.dailyLimit)
+local monthlyLimit = tonumber(cache.monthlyLimit)
+
+-- Check balance
+if balance < amountCents then return cjson.encode({error = "insufficient_balance"}) end
+-- Check daily limit
+if dailyLimit > 0 and (dailySpent + amountCents) > dailyLimit then return cjson.encode({error = "daily_limit"}) end
+-- Check monthly limit
+if monthlyLimit > 0 and (monthlySpent + amountCents) > monthlyLimit then return cjson.encode({error = "monthly_limit"}) end
+
+-- Update
+cache.usdcBalance = tostring(balance - amountCents)
+cache.dailySpent = tostring(dailySpent + amountCents)
+cache.monthlySpent = tostring(monthlySpent + amountCents)
+cache.lastUpdated = tonumber(ARGV[2])
+
+local updated = cjson.encode(cache)
+redis.call('SET', key, updated, 'EX', 300)
+return updated
+`;
+
+export async function atomicAuthSpend(
+  redis: RedisType,
+  eoaAddress: string,
+  amountCents: number,
+): Promise<{ cache: AuthorizationCache | null; error?: string }> {
+  const key = `${KEY_PREFIX.AUTH}${eoaAddress.toLowerCase()}`;
+  const result = (await redis.eval(
+    SPEND_LUA_SCRIPT,
+    1,
+    key,
+    amountCents.toString(),
+    Date.now().toString(),
+  )) as string | null;
+
+  if (!result) return { cache: null };
+
+  const parsed = JSON.parse(result);
+  if (parsed.error) return { cache: null, error: parsed.error };
+  return { cache: parsed as AuthorizationCache };
+}
+
 // ============ Card Mapping ============
 
 export async function getCardMapping(
@@ -103,8 +157,14 @@ export async function setCardMapping(
   redis: RedisType,
   cardToken: string,
   mapping: CardMapping,
+  ttlSeconds = 86400, // 24 hours
 ): Promise<void> {
-  await redis.set(`${KEY_PREFIX.CARD}${cardToken}`, JSON.stringify(mapping));
+  await redis.set(
+    `${KEY_PREFIX.CARD}${cardToken}`,
+    JSON.stringify(mapping),
+    "EX",
+    ttlSeconds,
+  );
 }
 
 // ============ Rate Limiting ============

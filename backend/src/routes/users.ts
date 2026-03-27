@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { Response } from "express";
 import type { PrismaClient } from "@prisma/client";
+import { z } from "zod";
 import { CreateUserSchema } from "../types/index.js";
 import type { AuthenticatedRequest } from "../middleware/auth.js";
 
@@ -9,6 +10,8 @@ import type { AuthenticatedRequest } from "../middleware/auth.js";
 interface UsersDeps {
   prisma: PrismaClient;
 }
+
+const idSchema = z.string().min(1).max(255);
 
 // ============ Users Router ============
 
@@ -82,6 +85,12 @@ export function createUsersRouter(deps: UsersDeps): Router {
 
   router.get("/v1/users/:id", async (req, res: Response) => {
     try {
+      const parseResult = idSchema.safeParse(req.params.id);
+      if (!parseResult.success) {
+        res.status(400).json({ error: "Invalid ID format" });
+        return;
+      }
+
       const authReq = req as unknown as AuthenticatedRequest;
       const tenantId = authReq.tenantId;
       const { id } = req.params;
@@ -140,6 +149,12 @@ export function createUsersRouter(deps: UsersDeps): Router {
 
   router.get("/v1/users/:id/balance", async (req, res: Response) => {
     try {
+      const parseResult = idSchema.safeParse(req.params.id);
+      if (!parseResult.success) {
+        res.status(400).json({ error: "Invalid ID format" });
+        return;
+      }
+
       const authReq = req as unknown as AuthenticatedRequest;
       const tenantId = authReq.tenantId;
       const { id } = req.params;

@@ -1,4 +1,4 @@
-import type { Response, NextFunction } from "express";
+import type { Request, Response, NextFunction } from "express";
 import type { Redis } from "ioredis";
 import { checkRateLimit } from "../lib/redis.js";
 import type { AuthenticatedRequest } from "./auth.js";
@@ -54,6 +54,41 @@ export function rateLimit(redis: Redis, defaultLimit = 1000) {
       // blocking legitimate traffic due to a Redis outage.
       console.error("[RateLimit] middleware error:", error);
       next();
+    }
+  };
+}
+
+// ============ Webhook Rate Limit ============
+
+/**
+ * IP-based rate limiter for webhook endpoints.
+ *
+ * Uses the same Redis sliding window as the tenant rate limiter but keyed
+ * by source IP instead of tenant ID.
+ */
+export function webhookRateLimit(redis: Redis, maxPerMinute = 300) {
+  return async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const ip = req.ip || req.socket.remoteAddress || "unknown";
+      const { allowed, remaining } = await checkRateLimit(
+        redis,
+        `webhook-ip:${ip}`,
+        maxPerMinute,
+        60,
+      );
+      res.setHeader("X-RateLimit-Limit", maxPerMinute.toString());
+      res.setHeader("X-RateLimit-Remaining", remaining.toString());
+      if (!allowed) {
+        res.status(429).json({ error: "Rate limit exceeded" });
+        return;
+      }
+      next();
+    } catch {
+      next(); // Fail open
     }
   };
 }

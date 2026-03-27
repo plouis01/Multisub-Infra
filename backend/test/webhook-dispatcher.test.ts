@@ -15,6 +15,12 @@ import {
   resetIdCounter,
   type MockPrismaClient,
 } from "./mocks.js";
+
+// Mock DNS resolution to allow test webhook URLs through SSRF validation
+vi.mock("../src/lib/dns-lookup.js", () => ({
+  resolveDns: () => Promise.resolve({ address: "203.0.113.1" }),
+}));
+
 import { WebhookDispatcher } from "../src/services/webhook-dispatcher.js";
 import type { WebhookPayload } from "../src/types/index.js";
 

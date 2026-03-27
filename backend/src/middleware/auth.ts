@@ -26,13 +26,23 @@ export function requireAuth(prisma: PrismaClient) {
     next: NextFunction,
   ): Promise<void> => {
     try {
-      // Development bypass: allow test tenant header
-      if (process.env.NODE_ENV === "development") {
+      // Test auth bypass: requires explicit opt-in and non-production environment
+      if (
+        process.env.ALLOW_TEST_AUTH === "true" &&
+        process.env.NODE_ENV !== "production"
+      ) {
         const testTenantId = req.headers["x-test-tenant-id"];
         if (typeof testTenantId === "string" && testTenantId.length > 0) {
-          (req as AuthenticatedRequest).tenantId = testTenantId;
-          next();
-          return;
+          // Verify test tenant exists in DB
+          const exists = await prisma.tenant.findUnique({
+            where: { id: testTenantId },
+            select: { id: true },
+          });
+          if (exists) {
+            (req as AuthenticatedRequest).tenantId = testTenantId;
+            next();
+            return;
+          }
         }
       }
 
@@ -73,7 +83,7 @@ export function requireAuth(prisma: PrismaClient) {
       }
 
       if (tenant.status !== "active") {
-        res.status(403).json({ error: `Tenant status: ${tenant.status}` });
+        res.status(403).json({ error: "Account access denied" });
         return;
       }
 

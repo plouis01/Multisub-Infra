@@ -13,7 +13,7 @@ import { YieldManager } from "./services/yield-manager.js";
 import { SweepService } from "./services/sweep-service.js";
 import { LithicClient, MockLithicClient } from "./integrations/lithic.js";
 import { requireAuth } from "./middleware/auth.js";
-import { rateLimit } from "./middleware/rate-limit.js";
+import { rateLimit, webhookRateLimit } from "./middleware/rate-limit.js";
 import { createHealthRouter } from "./routes/health.js";
 import { createUsersRouter } from "./routes/users.js";
 import { createCardsRouter } from "./routes/cards.js";
@@ -31,6 +31,12 @@ async function main(): Promise<void> {
   console.log(
     `[Server] Starting MultiSubs backend (env=${config.nodeEnv}, port=${config.port})`,
   );
+
+  if (config.adminTenantId === "__unset__") {
+    console.warn(
+      "[Server] WARNING: ADMIN_TENANT_ID not set — admin endpoints will be inaccessible",
+    );
+  }
 
   // ── Initialize Prisma ──
   const prisma = new PrismaClient();
@@ -141,13 +147,25 @@ async function main(): Promise<void> {
     cors({
       origin: config.corsOrigin,
       methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "X-API-Key", "X-Test-Tenant-Id"],
+      allowedHeaders: ["Content-Type", "X-API-Key"],
     }),
   );
-  app.use(express.json({ limit: "1mb" }));
+  app.use(
+    express.json({
+      limit: "1mb",
+      verify: (req: any, _res, buf) => {
+        // Store raw body buffer for HMAC verification
+        req.rawBody = buf.toString("utf8");
+      },
+    }),
+  );
 
   // ── Mount Health Route (no auth required) ──
   app.use(createHealthRouter({ prisma, redis, watcher }));
+
+  // ── Webhook Rate Limiting (IP-based) ──
+  const webhookLimiter = webhookRateLimit(redis, 300);
+  app.use("/webhooks", webhookLimiter as express.RequestHandler);
 
   // ── Mount Webhook Routes (HMAC auth, no API key auth) ──
   app.use(
@@ -177,12 +195,12 @@ async function main(): Promise<void> {
   const yieldRouter = createYieldRouter({ prisma });
   const tenantsRouter = createTenantsRouter({
     prisma,
-    adminTenantId: process.env.ADMIN_TENANT_ID ?? "",
+    adminTenantId: config.adminTenantId,
   });
   const adminRouter = createAdminRouter({
     prisma,
     config,
-    adminTenantId: process.env.ADMIN_TENANT_ID ?? "",
+    adminTenantId: config.adminTenantId,
   });
 
   app.use("/v1", authMiddleware as express.RequestHandler);

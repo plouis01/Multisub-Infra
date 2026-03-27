@@ -4,7 +4,11 @@
 export { MultiSubsClient } from "./client.js";
 
 // Webhook helpers
-export { verifyWebhook, verifyAndParseWebhook } from "./webhook.js";
+export {
+  verifyWebhook,
+  verifyWebhookWithTimestamp,
+  verifyAndParseWebhook,
+} from "./webhook.js";
 
 // Errors
 export {

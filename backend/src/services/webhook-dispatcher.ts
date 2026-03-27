@@ -1,8 +1,53 @@
 import { createHmac, randomUUID } from "node:crypto";
+import { URL } from "node:url";
 import type { PrismaClient } from "@prisma/client";
 import type { Redis } from "ioredis";
 import { getCardMapping } from "../lib/redis.js";
+import { resolveDns } from "../lib/dns-lookup.js";
 import type { WebhookPayload, WebhookEventType } from "../types/index.js";
+
+// ============ SSRF Protection ============
+
+const BLOCKED_IP_RANGES = [
+  /^127\./,
+  /^10\./,
+  /^172\.(1[6-9]|2\d|3[0-1])\./,
+  /^192\.168\./,
+  /^169\.254\./,
+  /^0\./,
+  /^::1$/,
+  /^fc00:/,
+  /^fe80:/,
+];
+
+export async function validateWebhookUrl(url: string): Promise<void> {
+  const parsed = new URL(url);
+
+  // Block non-HTTPS in production
+  if (process.env.NODE_ENV === "production" && parsed.protocol !== "https:") {
+    throw new Error(
+      `Webhook URL must use HTTPS in production: ${parsed.protocol}`,
+    );
+  }
+
+  // Block file:// and other exotic protocols
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error(`Invalid webhook URL protocol: ${parsed.protocol}`);
+  }
+
+  // Resolve hostname and check against blocked IP ranges
+  try {
+    const { address } = await resolveDns(parsed.hostname);
+    for (const range of BLOCKED_IP_RANGES) {
+      if (range.test(address)) {
+        throw new Error(`Webhook URL resolves to blocked IP range: ${address}`);
+      }
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("blocked IP")) throw err;
+    throw new Error(`Cannot resolve webhook URL hostname: ${parsed.hostname}`);
+  }
+}
 
 // ============ Constants ============
 
@@ -162,6 +207,8 @@ export class WebhookDispatcher {
     signature: string,
     timestamp: string,
   ): Promise<void> {
+    await validateWebhookUrl(url);
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 

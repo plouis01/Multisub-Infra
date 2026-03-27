@@ -3,7 +3,13 @@ import { z } from "zod";
 const ConfigSchema = z.object({
   // Server
   port: z.coerce.number().default(3000),
-  corsOrigin: z.string().default("http://localhost:5173"),
+  corsOrigin: z
+    .string()
+    .refine(
+      (val) => val !== "*" || process.env.NODE_ENV === "development",
+      "CORS wildcard '*' not allowed in production",
+    )
+    .default("http://localhost:5173"),
   nodeEnv: z.string().default("development"),
 
   // Blockchain
@@ -48,6 +54,9 @@ const ConfigSchema = z.object({
   yieldSnapshotIntervalMs: z.coerce.number().default(14_400_000), // 4 hours
   morphoVaultAddress: z.string().default(""),
   treasuryVaultAddress: z.string().default(""),
+
+  // Admin
+  adminTenantId: z.string().min(1).default("__unset__"),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -79,5 +88,6 @@ export function loadConfig(): Config {
     yieldSnapshotIntervalMs: process.env.YIELD_SNAPSHOT_INTERVAL_MS,
     morphoVaultAddress: process.env.MORPHO_VAULT_ADDRESS,
     treasuryVaultAddress: process.env.TREASURY_VAULT_ADDRESS,
+    adminTenantId: process.env.ADMIN_TENANT_ID,
   });
 }

@@ -47,8 +47,11 @@ export function createWebhooksRouter(deps: WebhooksDeps): Router {
     try {
       // Verify HMAC signature
       const signature = req.headers["x-lithic-signature"] as string | undefined;
-      const rawBody =
-        typeof req.body === "string" ? req.body : JSON.stringify(req.body);
+      const rawBody = (req as any).rawBody as string | undefined;
+      if (!rawBody) {
+        res.status(400).json({ error: "Missing request body" });
+        return;
+      }
 
       if (!signature) {
         res.status(401).json({ error: "Missing X-Lithic-Signature header" });
@@ -67,8 +70,27 @@ export function createWebhooksRouter(deps: WebhooksDeps): Router {
         typeof req.body === "string" ? JSON.parse(req.body) : req.body;
       const event = lithicClient.parseASAEvent(body);
 
+      // Replay protection: check if this token was already processed
+      const dedupeKey = `webhook:processed:${event.token}`;
+      const alreadyProcessed = await redis.get(dedupeKey);
+      if (alreadyProcessed) {
+        console.warn(
+          `[Webhooks] Duplicate webhook token ${event.token} — skipping`,
+        );
+        res.json({ result: "APPROVED" } as LithicASAResponse); // Return last known result
+        return;
+      }
+
       // Run authorization engine
       const result = await authorizationEngine.authorize(event);
+
+      // Mark as processed with 5-minute TTL
+      await redis.set(
+        dedupeKey,
+        result.approved ? "APPROVED" : "DECLINED",
+        "EX",
+        300,
+      );
 
       // Build the ASA response
       const asaResponse: LithicASAResponse = {

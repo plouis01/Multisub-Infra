@@ -26,6 +26,7 @@ vi.mock("../src/lib/redis.js", () => ({
   getCardMapping: vi.fn(),
   setCardMapping: vi.fn(),
   updateAuthCacheSpend: vi.fn(),
+  atomicAuthSpend: vi.fn(),
 }));
 
 import { AuthorizationEngine } from "../src/services/authorization-engine.js";
@@ -35,6 +36,7 @@ import {
   getCardMapping,
   setCardMapping,
   updateAuthCacheSpend,
+  atomicAuthSpend,
 } from "../src/lib/redis.js";
 import type {
   AuthorizationCache,
@@ -50,6 +52,7 @@ const mockSetCardMapping = setCardMapping as ReturnType<typeof vi.fn>;
 const mockUpdateAuthCacheSpend = updateAuthCacheSpend as ReturnType<
   typeof vi.fn
 >;
+const mockAtomicAuthSpend = atomicAuthSpend as ReturnType<typeof vi.fn>;
 
 describe("AuthorizationEngine", () => {
   let prisma: MockPrismaClient;
@@ -76,7 +79,7 @@ describe("AuthorizationEngine", () => {
     mockGetAuthCache.mockResolvedValue(defaultAuthCache);
     mockSetAuthCache.mockResolvedValue(undefined);
     mockSetCardMapping.mockResolvedValue(undefined);
-    mockUpdateAuthCacheSpend.mockResolvedValue({
+    const updatedDefaultCache = {
       ...defaultAuthCache,
       usdcBalance: (
         BigInt(defaultAuthCache.usdcBalance) - BigInt(defaultEvent.amount)
@@ -88,7 +91,13 @@ describe("AuthorizationEngine", () => {
         BigInt(defaultAuthCache.monthlySpent) + BigInt(defaultEvent.amount)
       ).toString(),
       lastUpdated: Date.now(),
-    });
+    };
+
+    // atomicAuthSpend is the primary path (Lua script)
+    mockAtomicAuthSpend.mockResolvedValue({ cache: updatedDefaultCache });
+
+    // updateAuthCacheSpend is the fallback path (WATCH/MULTI/EXEC)
+    mockUpdateAuthCacheSpend.mockResolvedValue(updatedDefaultCache);
 
     // KYC check returns approved
     prisma.user.findUnique.mockResolvedValue({ kycStatus: "approved" });
@@ -121,8 +130,8 @@ describe("AuthorizationEngine", () => {
       defaultEvent.card_token,
     );
 
-    // Verify the atomic spend update was called
-    expect(mockUpdateAuthCacheSpend).toHaveBeenCalledWith(
+    // Verify the atomic spend update was called (Lua script path)
+    expect(mockAtomicAuthSpend).toHaveBeenCalledWith(
       redis,
       defaultCardMapping.eoaAddress,
       Math.abs(defaultEvent.amount),
@@ -477,8 +486,11 @@ describe("AuthorizationEngine", () => {
   // ----------------------------------------------------------------
 
   it("declines when all atomic update retries are exhausted", async () => {
-    // Simulate WATCH contention: updateAuthCacheSpend returns null every time
-    mockUpdateAuthCacheSpend.mockResolvedValue(null);
+    // Simulate Lua returning an error, then WATCH contention on fallback
+    mockAtomicAuthSpend.mockResolvedValue({
+      cache: null,
+      error: "insufficient_balance",
+    });
 
     const result = await engine.authorize(defaultEvent);
 
@@ -497,7 +509,10 @@ describe("AuthorizationEngine", () => {
       lastUpdated: Date.now(),
     };
 
-    // First two attempts fail, third succeeds
+    // Lua script returns cache miss, falls back to WATCH/MULTI/EXEC
+    mockAtomicAuthSpend.mockResolvedValue({ cache: null });
+
+    // First two fallback attempts fail, third succeeds
     mockUpdateAuthCacheSpend
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
@@ -507,7 +522,7 @@ describe("AuthorizationEngine", () => {
 
     expect(result.approved).toBe(true);
     expect(result.balanceAfter).toBe(updatedCache.usdcBalance);
-    // Verify it was called 3 times (initial + 2 retries)
+    // Verify fallback was called 3 times (initial + 2 retries)
     expect(mockUpdateAuthCacheSpend).toHaveBeenCalledTimes(3);
   });
 
@@ -566,13 +581,13 @@ describe("AuthorizationEngine", () => {
       monthlySpent: "2500",
       lastUpdated: Date.now(),
     };
-    mockUpdateAuthCacheSpend.mockResolvedValue(updatedCache);
+    mockAtomicAuthSpend.mockResolvedValue({ cache: updatedCache });
 
     const result = await engine.authorize(negativeEvent);
 
     expect(result.approved).toBe(true);
     // The engine should use Math.abs, so the spend amount passed should be 2500
-    expect(mockUpdateAuthCacheSpend).toHaveBeenCalledWith(
+    expect(mockAtomicAuthSpend).toHaveBeenCalledWith(
       redis,
       defaultCardMapping.eoaAddress,
       2500,

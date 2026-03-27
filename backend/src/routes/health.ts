@@ -33,9 +33,10 @@ export function createHealthRouter(deps: HealthDeps): Router {
       const dbLatency = Math.round(performance.now() - dbStart);
       components.database = { status: "ok", latencyMs: dbLatency };
     } catch (error) {
+      console.error("[Health] Database check failed:", error);
       components.database = {
         status: "down",
-        detail: error instanceof Error ? error.message : "Unknown error",
+        detail: "Connection failed",
       };
       overall = "down";
     }
@@ -47,9 +48,10 @@ export function createHealthRouter(deps: HealthDeps): Router {
       const redisLatency = Math.round(performance.now() - redisStart);
       components.redis = { status: "ok", latencyMs: redisLatency };
     } catch (error) {
+      console.error("[Health] Redis check failed:", error);
       components.redis = {
         status: "down",
-        detail: error instanceof Error ? error.message : "Unknown error",
+        detail: "Connection failed",
       };
       overall = overall === "down" ? "down" : "degraded";
     }

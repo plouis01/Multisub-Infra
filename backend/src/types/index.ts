@@ -140,7 +140,18 @@ export const PaginationSchema = z.object({
 export const CreateTenantSchema = z.object({
   name: z.string().min(1).max(255),
   custodyModel: z.enum(["MODEL_A", "MODEL_B"]).default("MODEL_A"),
-  webhookUrl: z.string().url().optional(),
+  webhookUrl: z
+    .string()
+    .url()
+    .refine((url) => {
+      try {
+        const parsed = new URL(url);
+        return ["http:", "https:"].includes(parsed.protocol);
+      } catch {
+        return false;
+      }
+    }, "Must be a valid HTTP(S) URL")
+    .optional(),
   rateLimit: z.number().int().min(10).max(100_000).default(1000),
 });
 

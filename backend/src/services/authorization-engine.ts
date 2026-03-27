@@ -4,6 +4,7 @@ import {
   getAuthCache,
   getCardMapping,
   updateAuthCacheSpend,
+  atomicAuthSpend,
   setAuthCache,
   setCardMapping,
 } from "../lib/redis.js";
@@ -397,13 +398,28 @@ export class AuthorizationEngine {
 
   /**
    * Step 9: Atomically update the authorization cache with the new spend.
-   * Uses WATCH/MULTI/EXEC for optimistic locking. Retries on contention
-   * up to MAX_ATOMIC_RETRIES times.
+   * Uses a Redis Lua script for true atomicity (no TOCTOU race).
+   * Falls back to WATCH/MULTI/EXEC with retries if Lua returns null.
    */
   private async atomicSpendUpdate(
     eoaAddress: string,
     amountCents: number,
   ): Promise<AuthorizationCache | null> {
+    const { cache, error } = await atomicAuthSpend(
+      this.redis,
+      eoaAddress,
+      amountCents,
+    );
+
+    if (error) {
+      return null;
+    }
+
+    if (cache) {
+      return cache;
+    }
+
+    // Lua returned null (cache miss) — fall back to WATCH/MULTI/EXEC with retries
     for (let attempt = 0; attempt < MAX_ATOMIC_RETRIES; attempt++) {
       const result = await updateAuthCacheSpend(
         this.redis,
@@ -415,7 +431,6 @@ export class AuthorizationEngine {
         return result;
       }
 
-      // Null means WATCH detected a concurrent modification.
       // Brief backoff before retry to reduce contention.
       if (attempt < MAX_ATOMIC_RETRIES - 1) {
         await new Promise((resolve) => setTimeout(resolve, 2 ** attempt));

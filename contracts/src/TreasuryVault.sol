@@ -56,6 +56,8 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
     error ExecutionFailed();
     error BatchTooLarge(uint256 provided, uint256 max);
     error PositionsExist(uint256 totalShares);
+    error ZeroSharesMinted();
+    error SlippageExceeded(uint256 actual, uint256 limit);
 
     // ============ Events ============
 
@@ -113,8 +115,9 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
     /// @notice Deposit USDC into the Morpho vault on behalf of a tenant
     /// @param tenantId The tenant identifier
     /// @param usdcAmount Amount of USDC to deposit
+    /// @param minShares Minimum shares to receive (slippage protection, 0 to skip)
     /// @return shares Amount of Morpho vault shares minted for this tenant
-    function depositForTenant(bytes32 tenantId, uint256 usdcAmount)
+    function depositForTenant(bytes32 tenantId, uint256 usdcAmount, uint256 minShares)
         external
         override
         onlyOperator
@@ -147,6 +150,12 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
         uint256 sharesAfter = IMorphoVault(morphoVault).balanceOf(avatar);
         shares = sharesAfter - sharesBefore;
 
+        // Revert if zero shares minted (prevents accounting corruption)
+        if (shares == 0) revert ZeroSharesMinted();
+
+        // Slippage check
+        if (shares < minShares) revert SlippageExceeded(shares, minShares);
+
         // Update tenant position
         TenantPosition storage pos = _tenantPositions[tenantId];
         pos.shares += shares;
@@ -162,8 +171,9 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
     /// @notice Withdraw USDC from the Morpho vault on behalf of a tenant
     /// @param tenantId The tenant identifier
     /// @param usdcAmount Amount of USDC to withdraw
+    /// @param maxSharesBurned Maximum shares to burn (slippage protection, 0 to skip)
     /// @return sharesBurned Amount of Morpho vault shares burned for this tenant
-    function withdrawForTenant(bytes32 tenantId, uint256 usdcAmount)
+    function withdrawForTenant(bytes32 tenantId, uint256 usdcAmount, uint256 maxSharesBurned)
         external
         override
         onlyOperator
@@ -176,8 +186,8 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
 
         TenantPosition storage pos = _tenantPositions[tenantId];
 
-        // Pre-check: estimate shares needed and validate tenant has enough
-        uint256 estimatedShares = IMorphoVault(morphoVault).convertToShares(usdcAmount);
+        // Pre-check uses previewWithdraw (rounds UP per ERC-4626) instead of convertToShares
+        uint256 estimatedShares = IMorphoVault(morphoVault).previewWithdraw(usdcAmount);
         if (estimatedShares > pos.shares) {
             revert InsufficientShares(tenantId, estimatedShares, pos.shares);
         }
@@ -199,12 +209,17 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
             revert InsufficientShares(tenantId, sharesBurned, pos.shares);
         }
 
-        // Update tenant position
-        pos.shares -= sharesBurned;
+        // Slippage check
+        if (maxSharesBurned > 0 && sharesBurned > maxSharesBurned) {
+            revert SlippageExceeded(sharesBurned, maxSharesBurned);
+        }
 
-        // Reduce deposited proportionally: if withdrawing more than deposited, cap at deposited
-        uint256 depositReduction = usdcAmount > pos.depositedAmount ? pos.depositedAmount : usdcAmount;
+        // Proportional basis reduction (compute BEFORE decrementing shares)
+        uint256 depositReduction = pos.depositedAmount * sharesBurned / pos.shares;
+        pos.shares -= sharesBurned;
         pos.depositedAmount -= depositReduction;
+        // Clean up: if all shares gone, zero out deposited to prevent phantom residual
+        if (pos.shares == 0) pos.depositedAmount = 0;
 
         // Update global totals
         totalTenantShares -= sharesBurned;
@@ -217,9 +232,11 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
     /// @dev Use when the vault has lost value and withdrawing by USDC amount would fail
     /// @param tenantId The tenant identifier
     /// @param shares Amount of Morpho vault shares to redeem
+    /// @param minAssetsOut Minimum assets to receive (slippage protection, 0 to skip)
     /// @return assetsReceived Amount of USDC received from the redemption
-    function redeemForTenant(bytes32 tenantId, uint256 shares)
+    function redeemForTenant(bytes32 tenantId, uint256 shares, uint256 minAssetsOut)
         external
+        override
         onlyOperator
         nonReentrant
         whenNotPaused
@@ -240,10 +257,15 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
         uint256 assetsAfter = IERC20(usdc).balanceOf(avatar);
         assetsReceived = assetsAfter - assetsBefore;
 
-        // Update tenant position
+        // Slippage check
+        if (assetsReceived < minAssetsOut) revert SlippageExceeded(assetsReceived, minAssetsOut);
+
+        // Proportional basis reduction (compute BEFORE decrementing shares)
+        uint256 depositReduction = pos.depositedAmount * shares / pos.shares;
         pos.shares -= shares;
-        uint256 depositReduction = assetsReceived > pos.depositedAmount ? pos.depositedAmount : assetsReceived;
         pos.depositedAmount -= depositReduction;
+        // Clean up: if all shares gone, zero out deposited to prevent phantom residual
+        if (pos.shares == 0) pos.depositedAmount = 0;
 
         // Update global totals
         totalTenantShares -= shares;

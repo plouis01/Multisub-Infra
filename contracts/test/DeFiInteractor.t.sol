@@ -8,6 +8,7 @@ import {MockSafe} from "./mocks/MockSafe.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockMorphoVault} from "./mocks/MockMorphoVault.sol";
 import {MockAavePool} from "./mocks/MockAavePool.sol";
+import {TreasuryVault} from "../src/TreasuryVault.sol";
 
 contract DeFiInteractorTest is Test {
     DeFiInteractor public interactor;
@@ -144,7 +145,7 @@ contract DeFiInteractorTest is Test {
         uint256 amount = 10_000e6;
 
         vm.prank(operatorEOA);
-        uint256 shares = interactor.depositToMorpho(address(morphoVault), amount);
+        uint256 shares = interactor.depositToMorpho(address(morphoVault), amount, 0);
 
         assertGt(shares, 0);
         // Safe should have less USDC
@@ -161,32 +162,32 @@ contract DeFiInteractorTest is Test {
         emit IDeFiInteractor.MorphoDeposit(address(morphoVault), amount, expectedShares);
 
         vm.prank(operatorEOA);
-        interactor.depositToMorpho(address(morphoVault), amount);
+        interactor.depositToMorpho(address(morphoVault), amount, 0);
     }
 
     function test_depositToMorpho_revertsOnZeroAmount() public {
         vm.expectRevert(DeFiInteractor.ZeroAmount.selector);
         vm.prank(operatorEOA);
-        interactor.depositToMorpho(address(morphoVault), 0);
+        interactor.depositToMorpho(address(morphoVault), 0, 0);
     }
 
     function test_depositToMorpho_revertsOnNonAllowlistedVault() public {
         address fakeVault = address(0x999);
         vm.expectRevert(abi.encodeWithSelector(DeFiInteractor.VaultNotAllowlisted.selector, fakeVault));
         vm.prank(operatorEOA);
-        interactor.depositToMorpho(fakeVault, 1000e6);
+        interactor.depositToMorpho(fakeVault, 1000e6, 0);
     }
 
     function test_depositToMorpho_revertsForNonOperator() public {
         vm.expectRevert(DeFiInteractor.OnlyOperator.selector);
         vm.prank(attacker);
-        interactor.depositToMorpho(address(morphoVault), 1000e6);
+        interactor.depositToMorpho(address(morphoVault), 1000e6, 0);
     }
 
     function test_depositToMorpho_revertsForOwner() public {
         vm.expectRevert(DeFiInteractor.OnlyOperator.selector);
         vm.prank(owner);
-        interactor.depositToMorpho(address(morphoVault), 1000e6);
+        interactor.depositToMorpho(address(morphoVault), 1000e6, 0);
     }
 
     // ============ Morpho Withdraw Tests ============
@@ -195,14 +196,14 @@ contract DeFiInteractorTest is Test {
         // First deposit
         uint256 depositAmount = 50_000e6;
         vm.prank(operatorEOA);
-        interactor.depositToMorpho(address(morphoVault), depositAmount);
+        interactor.depositToMorpho(address(morphoVault), depositAmount, 0);
 
         uint256 safeBalanceBefore = usdc.balanceOf(address(safe));
 
         // Withdraw half
         uint256 withdrawAmount = 25_000e6;
         vm.prank(operatorEOA);
-        uint256 sharesBurned = interactor.withdrawFromMorpho(address(morphoVault), withdrawAmount);
+        uint256 sharesBurned = interactor.withdrawFromMorpho(address(morphoVault), withdrawAmount, 0);
 
         assertGt(sharesBurned, 0);
         assertEq(usdc.balanceOf(address(safe)), safeBalanceBefore + withdrawAmount);
@@ -211,7 +212,7 @@ contract DeFiInteractorTest is Test {
     function test_withdrawFromMorpho_emitsEvent() public {
         // Deposit first
         vm.prank(operatorEOA);
-        interactor.depositToMorpho(address(morphoVault), 10_000e6);
+        interactor.depositToMorpho(address(morphoVault), 10_000e6, 0);
 
         uint256 withdrawAmount = 5_000e6;
         uint256 expectedShares = morphoVault.convertToShares(withdrawAmount);
@@ -220,20 +221,20 @@ contract DeFiInteractorTest is Test {
         emit IDeFiInteractor.MorphoWithdraw(address(morphoVault), withdrawAmount, expectedShares);
 
         vm.prank(operatorEOA);
-        interactor.withdrawFromMorpho(address(morphoVault), withdrawAmount);
+        interactor.withdrawFromMorpho(address(morphoVault), withdrawAmount, 0);
     }
 
     function test_withdrawFromMorpho_revertsOnZeroAmount() public {
         vm.expectRevert(DeFiInteractor.ZeroAmount.selector);
         vm.prank(operatorEOA);
-        interactor.withdrawFromMorpho(address(morphoVault), 0);
+        interactor.withdrawFromMorpho(address(morphoVault), 0, 0);
     }
 
     function test_withdrawFromMorpho_revertsOnNonAllowlisted() public {
         address fakeVault = address(0x999);
         vm.expectRevert(abi.encodeWithSelector(DeFiInteractor.VaultNotAllowlisted.selector, fakeVault));
         vm.prank(operatorEOA);
-        interactor.withdrawFromMorpho(fakeVault, 1000e6);
+        interactor.withdrawFromMorpho(fakeVault, 1000e6, 0);
     }
 
     // ============ Morpho Redeem Tests ============
@@ -242,14 +243,14 @@ contract DeFiInteractorTest is Test {
         // Deposit first
         uint256 depositAmount = 20_000e6;
         vm.prank(operatorEOA);
-        uint256 depositedShares = interactor.depositToMorpho(address(morphoVault), depositAmount);
+        uint256 depositedShares = interactor.depositToMorpho(address(morphoVault), depositAmount, 0);
 
         uint256 safeBalanceBefore = usdc.balanceOf(address(safe));
 
         // Redeem half the shares
         uint256 sharesToRedeem = depositedShares / 2;
         vm.prank(operatorEOA);
-        uint256 assetsReceived = interactor.redeemFromMorpho(address(morphoVault), sharesToRedeem);
+        uint256 assetsReceived = interactor.redeemFromMorpho(address(morphoVault), sharesToRedeem, 0);
 
         assertGt(assetsReceived, 0);
         assertEq(usdc.balanceOf(address(safe)), safeBalanceBefore + assetsReceived);
@@ -258,7 +259,7 @@ contract DeFiInteractorTest is Test {
     function test_redeemFromMorpho_emitsEvent() public {
         // Deposit first
         vm.prank(operatorEOA);
-        uint256 shares = interactor.depositToMorpho(address(morphoVault), 10_000e6);
+        uint256 shares = interactor.depositToMorpho(address(morphoVault), 10_000e6, 0);
 
         uint256 expectedAssets = morphoVault.convertToAssets(shares);
 
@@ -266,13 +267,13 @@ contract DeFiInteractorTest is Test {
         emit IDeFiInteractor.MorphoRedeem(address(morphoVault), shares, expectedAssets);
 
         vm.prank(operatorEOA);
-        interactor.redeemFromMorpho(address(morphoVault), shares);
+        interactor.redeemFromMorpho(address(morphoVault), shares, 0);
     }
 
     function test_redeemFromMorpho_revertsOnZeroShares() public {
         vm.expectRevert(DeFiInteractor.ZeroAmount.selector);
         vm.prank(operatorEOA);
-        interactor.redeemFromMorpho(address(morphoVault), 0);
+        interactor.redeemFromMorpho(address(morphoVault), 0, 0);
     }
 
     // ============ Aave Supply Tests ============
@@ -331,7 +332,7 @@ contract DeFiInteractorTest is Test {
         // Withdraw half
         uint256 withdrawAmount = 10_000e6;
         vm.prank(operatorEOA);
-        uint256 withdrawn = interactor.withdrawFromAave(address(aavePool), address(usdc), withdrawAmount);
+        uint256 withdrawn = interactor.withdrawFromAave(address(aavePool), address(usdc), withdrawAmount, 0);
 
         assertEq(withdrawn, withdrawAmount);
         assertEq(usdc.balanceOf(address(safe)), safeBalanceBefore + withdrawAmount);
@@ -348,20 +349,20 @@ contract DeFiInteractorTest is Test {
         emit IDeFiInteractor.AaveWithdraw(address(aavePool), address(usdc), withdrawAmount, withdrawAmount);
 
         vm.prank(operatorEOA);
-        interactor.withdrawFromAave(address(aavePool), address(usdc), withdrawAmount);
+        interactor.withdrawFromAave(address(aavePool), address(usdc), withdrawAmount, 0);
     }
 
     function test_withdrawFromAave_revertsOnZeroAmount() public {
         vm.expectRevert(DeFiInteractor.ZeroAmount.selector);
         vm.prank(operatorEOA);
-        interactor.withdrawFromAave(address(aavePool), address(usdc), 0);
+        interactor.withdrawFromAave(address(aavePool), address(usdc), 0, 0);
     }
 
     function test_withdrawFromAave_revertsOnNonAllowlisted() public {
         address fakePool = address(0x999);
         vm.expectRevert(abi.encodeWithSelector(DeFiInteractor.VaultNotAllowlisted.selector, fakePool));
         vm.prank(operatorEOA);
-        interactor.withdrawFromAave(fakePool, address(usdc), 1000e6);
+        interactor.withdrawFromAave(fakePool, address(usdc), 1000e6, 0);
     }
 
     // ============ Operator Management Tests ============
@@ -400,12 +401,12 @@ contract DeFiInteractorTest is Test {
 
         // New operator can deposit
         vm.prank(newOperator);
-        interactor.depositToMorpho(address(morphoVault), 1000e6);
+        interactor.depositToMorpho(address(morphoVault), 1000e6, 0);
 
         // Old operator cannot
         vm.expectRevert(DeFiInteractor.OnlyOperator.selector);
         vm.prank(operatorEOA);
-        interactor.depositToMorpho(address(morphoVault), 1000e6);
+        interactor.depositToMorpho(address(morphoVault), 1000e6, 0);
     }
 
     // ============ Pause Tests ============
@@ -416,7 +417,7 @@ contract DeFiInteractorTest is Test {
 
         vm.expectRevert();
         vm.prank(operatorEOA);
-        interactor.depositToMorpho(address(morphoVault), 1000e6);
+        interactor.depositToMorpho(address(morphoVault), 1000e6, 0);
     }
 
     function test_pause_preventsWithdraw() public {
@@ -425,7 +426,7 @@ contract DeFiInteractorTest is Test {
 
         vm.expectRevert();
         vm.prank(operatorEOA);
-        interactor.withdrawFromMorpho(address(morphoVault), 1000e6);
+        interactor.withdrawFromMorpho(address(morphoVault), 1000e6, 0);
     }
 
     function test_pause_preventsRedeem() public {
@@ -434,7 +435,7 @@ contract DeFiInteractorTest is Test {
 
         vm.expectRevert();
         vm.prank(operatorEOA);
-        interactor.redeemFromMorpho(address(morphoVault), 1000e6);
+        interactor.redeemFromMorpho(address(morphoVault), 1000e6, 0);
     }
 
     function test_pause_preventsAaveSupply() public {
@@ -452,7 +453,7 @@ contract DeFiInteractorTest is Test {
 
         vm.expectRevert();
         vm.prank(operatorEOA);
-        interactor.withdrawFromAave(address(aavePool), address(usdc), 1000e6);
+        interactor.withdrawFromAave(address(aavePool), address(usdc), 1000e6, 0);
     }
 
     function test_unpause_allowsOperations() public {
@@ -463,7 +464,7 @@ contract DeFiInteractorTest is Test {
         interactor.unpause();
 
         vm.prank(operatorEOA);
-        interactor.depositToMorpho(address(morphoVault), 1000e6);
+        interactor.depositToMorpho(address(morphoVault), 1000e6, 0);
         assertEq(usdc.balanceOf(address(safe)), 1_000_000e6 - 1000e6);
     }
 
@@ -489,7 +490,7 @@ contract DeFiInteractorTest is Test {
 
         vm.expectRevert(DeFiInteractor.ExecutionFailed.selector);
         vm.prank(operatorEOA);
-        interactor.depositToMorpho(address(morphoVault), 1000e6);
+        interactor.depositToMorpho(address(morphoVault), 1000e6, 0);
     }
 
     // ============ Multiple Operations Test ============
@@ -498,15 +499,15 @@ contract DeFiInteractorTest is Test {
         vm.startPrank(operatorEOA);
 
         // Deposit 100k
-        interactor.depositToMorpho(address(morphoVault), 100_000e6);
+        interactor.depositToMorpho(address(morphoVault), 100_000e6, 0);
         assertEq(usdc.balanceOf(address(safe)), 900_000e6);
 
         // Deposit another 50k
-        interactor.depositToMorpho(address(morphoVault), 50_000e6);
+        interactor.depositToMorpho(address(morphoVault), 50_000e6, 0);
         assertEq(usdc.balanceOf(address(safe)), 850_000e6);
 
         // Withdraw 30k
-        interactor.withdrawFromMorpho(address(morphoVault), 30_000e6);
+        interactor.withdrawFromMorpho(address(morphoVault), 30_000e6, 0);
         assertEq(usdc.balanceOf(address(safe)), 880_000e6);
 
         vm.stopPrank();
@@ -520,7 +521,7 @@ contract DeFiInteractorTest is Test {
 
         vm.expectRevert(abi.encodeWithSelector(DeFiInteractor.VaultNotAllowlisted.selector, address(morphoVault)));
         vm.prank(operatorEOA);
-        interactor.depositToMorpho(address(morphoVault), 1000e6);
+        interactor.depositToMorpho(address(morphoVault), 1000e6, 0);
     }
 
     // ============ Ownership Transfer ============
@@ -558,7 +559,7 @@ contract DeFiInteractorTest is Test {
         vm.assume(amount <= 1_000_000e6);
 
         vm.prank(operatorEOA);
-        uint256 shares = interactor.depositToMorpho(address(morphoVault), uint256(amount));
+        uint256 shares = interactor.depositToMorpho(address(morphoVault), uint256(amount), 0);
 
         assertGt(shares, 0);
         assertEq(usdc.balanceOf(address(safe)), 1_000_000e6 - amount);
@@ -573,5 +574,88 @@ contract DeFiInteractorTest is Test {
 
         assertEq(usdc.balanceOf(address(safe)), 1_000_000e6 - amount);
         assertEq(aavePool.deposits(address(safe), address(usdc)), amount);
+    }
+
+    // ============ Slippage Protection Tests ============
+
+    function test_depositToMorpho_revertsOnSlippage() public {
+        uint256 amount = 10_000e6;
+        // At 1:1 rate, shares == amount. Set minShares higher than possible.
+        uint256 impossibleMinShares = amount + 1;
+
+        vm.expectRevert(abi.encodeWithSelector(DeFiInteractor.SlippageExceeded.selector, amount, impossibleMinShares));
+        vm.prank(operatorEOA);
+        interactor.depositToMorpho(address(morphoVault), amount, impossibleMinShares);
+    }
+
+    function test_withdrawFromMorpho_revertsOnSlippage() public {
+        // Deposit first
+        vm.prank(operatorEOA);
+        interactor.depositToMorpho(address(morphoVault), 50_000e6, 0);
+
+        // At 1:1 rate, withdrawing 10k burns 10k shares. Set maxSharesBurned to 1.
+        vm.expectRevert(abi.encodeWithSelector(DeFiInteractor.SlippageExceeded.selector, 10_000e6, 1));
+        vm.prank(operatorEOA);
+        interactor.withdrawFromMorpho(address(morphoVault), 10_000e6, 1);
+    }
+
+    function test_redeemFromMorpho_revertsOnSlippage() public {
+        // Deposit first
+        vm.prank(operatorEOA);
+        uint256 shares = interactor.depositToMorpho(address(morphoVault), 10_000e6, 0);
+
+        // At 1:1 rate, redeeming shares gives 10k. Set minAssetsOut higher.
+        uint256 impossibleMinAssets = 10_001e6;
+        vm.expectRevert(abi.encodeWithSelector(DeFiInteractor.SlippageExceeded.selector, 10_000e6, impossibleMinAssets));
+        vm.prank(operatorEOA);
+        interactor.redeemFromMorpho(address(morphoVault), shares, impossibleMinAssets);
+    }
+
+    // ============ Cross-Module Share Desync Protection Tests ============
+
+    function test_withdrawFromMorpho_revertsOnTenantShareDesync() public {
+        // Deploy a TreasuryVault that tracks tenant shares in the same morpho vault
+        TreasuryVault tvault = new TreasuryVault(address(safe), owner, operatorEOA, address(morphoVault), address(usdc));
+        safe.enableModule(address(tvault));
+
+        // Wire up the treasury vault in DeFiInteractor
+        vm.prank(owner);
+        interactor.setTreasuryVault(address(tvault));
+
+        // Deposit via DeFiInteractor (non-tenant shares)
+        vm.prank(operatorEOA);
+        interactor.depositToMorpho(address(morphoVault), 100_000e6, 0);
+
+        // Deposit via TreasuryVault (tenant shares)
+        vm.prank(operatorEOA);
+        tvault.depositForTenant(keccak256("tenant-A"), 50_000e6, 0);
+
+        uint256 totalTenantShares = tvault.totalTenantShares();
+        uint256 safeShares = morphoVault.balanceOf(address(safe));
+
+        // Try to withdraw more than non-tenant shares via DeFiInteractor
+        // This would leave remaining shares < totalTenantShares
+        uint256 excessiveWithdraw = 110_000e6; // more than the 100k non-tenant portion
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DeFiInteractor.WouldDesyncTenantShares.selector,
+                safeShares - morphoVault.convertToShares(excessiveWithdraw),
+                totalTenantShares
+            )
+        );
+        vm.prank(operatorEOA);
+        interactor.withdrawFromMorpho(address(morphoVault), excessiveWithdraw, 0);
+    }
+
+    function test_setTreasuryVault_onlyOwner() public {
+        vm.expectRevert();
+        vm.prank(attacker);
+        interactor.setTreasuryVault(address(0x123));
+    }
+
+    function test_setTreasuryVault_setsAddress() public {
+        vm.prank(owner);
+        interactor.setTreasuryVault(address(0x123));
+        assertEq(interactor.treasuryVault(), address(0x123));
     }
 }

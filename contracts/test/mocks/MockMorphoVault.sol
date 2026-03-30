@@ -81,6 +81,12 @@ contract MockMorphoVault {
         return convertToAssets(shares);
     }
 
+    function previewWithdraw(uint256 assets) external view returns (uint256) {
+        // Rounds up: (assets * RATE_SCALE + exchangeRate - 1) / exchangeRate
+        if (exchangeRate == 0) return assets;
+        return (assets * RATE_SCALE + exchangeRate - 1) / exchangeRate;
+    }
+
     // ============ Test Helpers ============
 
     /// @notice Set the exchange rate to simulate yield accrual

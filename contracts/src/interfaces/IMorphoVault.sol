@@ -43,6 +43,9 @@ interface IMorphoVault {
     /// @notice Preview redeem effects
     function previewRedeem(uint256 shares) external view returns (uint256 assets);
 
+    /// @notice Preview withdraw effects (rounds up shares per ERC-4626)
+    function previewWithdraw(uint256 assets) external view returns (uint256 shares);
+
     // ============ ERC20 Functions ============
 
     /// @notice Get balance of shares for an account

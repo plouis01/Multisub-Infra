@@ -314,7 +314,8 @@ contract SafeFactoryTest is Test {
 
         assertEq(spendSettler.avatar(), m2Safe);
         assertEq(spendSettler.target(), m2Safe);
-        assertEq(spendSettler.owner(), m2Safe);
+        // SpendSettler owner is the platform admin (factory owner), not m2Safe
+        assertEq(spendSettler.owner(), owner);
         assertEq(spendSettler.settler(), settlerEOA);
         assertEq(spendSettler.issuerSafe(), issuerSafe);
         assertEq(spendSettler.usdc(), address(usdc));

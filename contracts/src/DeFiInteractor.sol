@@ -7,6 +7,7 @@ import {IERC20} from "./interfaces/IERC20.sol";
 import {IMorphoVault} from "./interfaces/IMorphoVault.sol";
 import {IAavePool} from "./interfaces/IAavePool.sol";
 import {IDeFiInteractor} from "./interfaces/IDeFiInteractor.sol";
+import {ITreasuryVault} from "./interfaces/ITreasuryVault.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
@@ -23,6 +24,9 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
     /// @notice Authorized yield manager service address
     address public override operator;
 
+    /// @notice TreasuryVault address for cross-module share desync protection
+    address public override treasuryVault;
+
     /// @notice Allowlisted vault/pool addresses
     mapping(address => bool) public override isAllowlistedVault;
 
@@ -37,6 +41,8 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
     error VaultNotFound(address vault);
     error ZeroAmount();
     error ExecutionFailed();
+    error SlippageExceeded(uint256 actual, uint256 limit);
+    error WouldDesyncTenantShares(uint256 remainingShares, uint256 tenantShares);
 
     // ============ Events ============
 
@@ -78,8 +84,9 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
     /// @notice Deposit USDC into a Morpho vault through the Safe
     /// @param vault The Morpho vault address (must be allowlisted)
     /// @param assets Amount of underlying assets (USDC) to deposit
+    /// @param minShares Minimum shares to receive (slippage protection, 0 to skip)
     /// @return shares Amount of vault shares minted to the Safe
-    function depositToMorpho(address vault, uint256 assets)
+    function depositToMorpho(address vault, uint256 assets, uint256 minShares)
         external
         override
         onlyOperator
@@ -113,14 +120,18 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
         uint256 sharesAfter = IMorphoVault(vault).balanceOf(avatar);
         shares = sharesAfter - sharesBefore;
 
+        // Step 6: Slippage check
+        if (shares < minShares) revert SlippageExceeded(shares, minShares);
+
         emit MorphoDeposit(vault, assets, shares);
     }
 
     /// @notice Withdraw USDC from a Morpho vault through the Safe
     /// @param vault The Morpho vault address (must be allowlisted)
     /// @param assets Amount of underlying assets (USDC) to withdraw
+    /// @param maxSharesBurned Maximum shares to burn (slippage protection, 0 to skip)
     /// @return sharesBurned Amount of vault shares burned
-    function withdrawFromMorpho(address vault, uint256 assets)
+    function withdrawFromMorpho(address vault, uint256 assets, uint256 maxSharesBurned)
         external
         override
         onlyOperator
@@ -144,14 +155,23 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
         sharesBurned = sharesBefore - sharesAfter;
         if (sharesBurned == 0) revert ZeroAmount();
 
+        // Slippage check
+        if (maxSharesBurned > 0 && sharesBurned > maxSharesBurned) {
+            revert SlippageExceeded(sharesBurned, maxSharesBurned);
+        }
+
+        // Cross-module share desync protection
+        _checkTenantShareSafety(vault);
+
         emit MorphoWithdraw(vault, assets, sharesBurned);
     }
 
     /// @notice Redeem vault shares for USDC from a Morpho vault through the Safe
     /// @param vault The Morpho vault address (must be allowlisted)
     /// @param shares Amount of vault shares to redeem
+    /// @param minAssetsOut Minimum assets to receive (slippage protection, 0 to skip)
     /// @return assetsReceived Amount of underlying assets (USDC) received
-    function redeemFromMorpho(address vault, uint256 shares)
+    function redeemFromMorpho(address vault, uint256 shares, uint256 minAssetsOut)
         external
         override
         onlyOperator
@@ -174,6 +194,12 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
         // Compute actual assets received via balance snapshot
         uint256 assetsAfter = IERC20(underlying).balanceOf(avatar);
         assetsReceived = assetsAfter - assetsBefore;
+
+        // Slippage check
+        if (assetsReceived < minAssetsOut) revert SlippageExceeded(assetsReceived, minAssetsOut);
+
+        // Cross-module share desync protection
+        _checkTenantShareSafety(vault);
 
         emit MorphoRedeem(vault, shares, assetsReceived);
     }
@@ -216,8 +242,9 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
     /// @param pool The Aave v3 pool address (must be allowlisted)
     /// @param asset The ERC20 asset to withdraw
     /// @param amount Amount to withdraw (use type(uint256).max for full balance)
+    /// @param minReceived Minimum assets to receive (slippage protection, 0 to skip)
     /// @return withdrawn The actual amount withdrawn
-    function withdrawFromAave(address pool, address asset, uint256 amount)
+    function withdrawFromAave(address pool, address asset, uint256 amount, uint256 minReceived)
         external
         override
         onlyOperator
@@ -239,6 +266,9 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
         // Compute actual withdrawn amount via balance snapshot
         uint256 balanceAfter = IERC20(asset).balanceOf(avatar);
         withdrawn = balanceAfter - balanceBefore;
+
+        // Slippage check
+        if (withdrawn < minReceived) revert SlippageExceeded(withdrawn, minReceived);
 
         emit AaveWithdraw(pool, asset, amount, withdrawn);
     }
@@ -271,10 +301,28 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
         emit OperatorUpdated(oldOperator, newOperator);
     }
 
+    /// @notice Set the TreasuryVault address for cross-module share desync protection
+    /// @param _treasuryVault The TreasuryVault address (address(0) to disable check)
+    function setTreasuryVault(address _treasuryVault) external override onlyOwner {
+        treasuryVault = _treasuryVault;
+    }
+
     // ============ Internal Functions ============
 
     /// @notice Validate that a vault/pool address is allowlisted
     function _requireAllowlisted(address vault) internal view {
         if (!isAllowlistedVault[vault]) revert VaultNotAllowlisted(vault);
+    }
+
+    /// @notice Check that remaining vault shares are sufficient to cover TreasuryVault tenant shares
+    /// @dev Prevents DeFiInteractor withdrawals from desynchronizing TreasuryVault accounting
+    function _checkTenantShareSafety(address vault) internal view {
+        if (treasuryVault == address(0)) return;
+        if (ITreasuryVault(treasuryVault).morphoVault() != vault) return;
+        uint256 remainingShares = IMorphoVault(vault).balanceOf(avatar);
+        uint256 tenantShares = ITreasuryVault(treasuryVault).totalTenantShares();
+        if (remainingShares < tenantShares) {
+            revert WouldDesyncTenantShares(remainingShares, tenantShares);
+        }
     }
 }

@@ -27,9 +27,13 @@ interface ITreasuryVault {
 
     // ============ Core Functions ============
 
-    function depositForTenant(bytes32 tenantId, uint256 usdcAmount) external returns (uint256 shares);
-    function withdrawForTenant(bytes32 tenantId, uint256 usdcAmount) external returns (uint256 sharesBurned);
-    function redeemForTenant(bytes32 tenantId, uint256 shares) external returns (uint256 assetsReceived);
+    function depositForTenant(bytes32 tenantId, uint256 usdcAmount, uint256 minShares) external returns (uint256 shares);
+    function withdrawForTenant(bytes32 tenantId, uint256 usdcAmount, uint256 maxSharesBurned)
+        external
+        returns (uint256 sharesBurned);
+    function redeemForTenant(bytes32 tenantId, uint256 shares, uint256 minAssetsOut)
+        external
+        returns (uint256 assetsReceived);
 
     // ============ Yield Functions ============
 
@@ -41,6 +45,7 @@ interface ITreasuryVault {
     function getTenantPosition(bytes32 tenantId) external view returns (TenantPosition memory);
     function getTenantShares(bytes32 tenantId) external view returns (uint256);
     function getTenantDeposited(bytes32 tenantId) external view returns (uint256);
+    function totalTenantShares() external view returns (uint256);
     function operator() external view returns (address);
     function morphoVault() external view returns (address);
     function usdc() external view returns (address);

@@ -309,7 +309,7 @@ contract SafeFactory is ISafeFactory, Ownable2Step {
     {
         // (a) Deploy SpendSettler via CREATE2 with constructor args
         bytes memory bytecode =
-            abi.encodePacked(type(SpendSettler).creationCode, abi.encode(m2Safe, m2Safe, settler, issuerSafe, usdc));
+            abi.encodePacked(type(SpendSettler).creationCode, abi.encode(m2Safe, owner(), settler, issuerSafe, usdc));
 
         address spendSettlerAddr;
         assembly {

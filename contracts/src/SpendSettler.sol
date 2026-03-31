@@ -184,6 +184,16 @@ contract SpendSettler is Module, ReentrancyGuard, Pausable, ISpendSettler {
         emit MaxSettleAmountUpdated(_max);
     }
 
+    /// @notice Disabled — avatar and target are immutable after construction
+    function setAvatar(address) external override onlyOwner {
+        revert InvalidAddress();
+    }
+
+    /// @notice Disabled — avatar and target are immutable after construction
+    function setTarget(address) external override onlyOwner {
+        revert InvalidAddress();
+    }
+
     // ============ View Functions ============
 
     /// @inheritdoc ISpendSettler

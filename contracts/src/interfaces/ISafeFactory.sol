@@ -53,6 +53,9 @@ interface ISafeFactory {
     /// @notice Emitted when the M1 Treasury address is updated
     event M1TreasuryAddressUpdated(address indexed oldTreasury, address indexed newTreasury);
 
+    /// @notice Emitted when the settler address is updated
+    event SettlerUpdated(address indexed oldSettler, address indexed newSettler);
+
     // ============ Deployment ============
 
     /// @notice Deploy a fully configured M2 Safe with SpendSettler module

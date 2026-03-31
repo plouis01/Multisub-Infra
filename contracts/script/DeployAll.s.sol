@@ -146,6 +146,10 @@ contract DeployAll is Script {
         treasuryVault = address(vault);
         console2.log("7. TreasuryVault deployed:", treasuryVault);
 
+        // Wire DeFiInteractor -> TreasuryVault for cross-module share desync protection
+        defi.setTreasuryVault(treasuryVault);
+        console2.log("   DeFiInteractor -> TreasuryVault wired");
+
         // ══════════════════════════════════════════════════════════════════
         // PHASE 3: Configuration
         // ══════════════════════════════════════════════════════════════════

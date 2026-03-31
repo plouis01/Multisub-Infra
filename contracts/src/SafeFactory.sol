@@ -165,6 +165,15 @@ contract SafeFactory is ISafeFactory, Ownable2Step {
         emit DelayModuleImplementationUpdated(oldImpl, _impl);
     }
 
+    /// @notice Update the settler address for future deployments
+    /// @param _settler The new settler address
+    function setSettler(address _settler) external onlyOwner {
+        if (_settler == address(0)) revert InvalidAddress();
+        address oldSettler = settler;
+        settler = _settler;
+        emit SettlerUpdated(oldSettler, _settler);
+    }
+
     /// @notice Set the M1 Treasury address for sweeper role scoping
     /// @param _treasury The new treasury address
     function setM1TreasuryAddress(address _treasury) external onlyOwner {
@@ -301,6 +310,9 @@ contract SafeFactory is ISafeFactory, Ownable2Step {
     /// @dev Deploys SpendSettler via CREATE2, Roles and Delay via EIP-1167 clone.
     ///      Module enabling and Zodiac initialization happen inside the Safe's
     ///      setup() delegatecall to the ModuleSetupHelper.
+    ///      Modules are deployed and initialized atomically within deploySafe() to prevent
+    ///      front-running of Zodiac setUp(). Clones don't exist before this tx, so their
+    ///      deterministic addresses cannot be initialized by an attacker.
     /// @param m2Safe The Safe the modules will be attached to
     /// @param salt The salt for deterministic deployment
     function _deployModuleContracts(address m2Safe, bytes32 salt)

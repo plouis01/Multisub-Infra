@@ -17,6 +17,8 @@ interface IDeFiInteractor {
     event VaultAllowlisted(address indexed vault);
     event VaultRemoved(address indexed vault);
     event OperatorUpdated(address indexed oldOperator, address indexed newOperator);
+    event TreasuryVaultUpdated(address indexed oldVault, address indexed newVault);
+    event RewardsClaimed(address indexed distributor);
 
     // ============ Morpho Operations ============
 

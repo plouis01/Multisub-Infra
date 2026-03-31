@@ -128,8 +128,9 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
         if (tenantId == bytes32(0)) revert ZeroTenantId();
         if (usdcAmount == 0) revert ZeroAmount();
 
-        // Snapshot share balance before deposit
+        // Snapshot share balance and USDC balance before deposit
         uint256 sharesBefore = IMorphoVault(morphoVault).balanceOf(avatar);
+        uint256 usdcBefore = IERC20(usdc).balanceOf(avatar);
 
         // Step 1: Approve the Morpho vault to spend USDC from the Safe
         bytes memory approveData = abi.encodeWithSelector(IERC20.approve.selector, morphoVault, usdcAmount);
@@ -150,22 +151,26 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
         uint256 sharesAfter = IMorphoVault(morphoVault).balanceOf(avatar);
         shares = sharesAfter - sharesBefore;
 
+        // Compute actual USDC consumed via before/after balance snapshot (M-04 fix)
+        uint256 usdcAfter = IERC20(usdc).balanceOf(avatar);
+        uint256 actualUsdcConsumed = usdcBefore - usdcAfter;
+
         // Revert if zero shares minted (prevents accounting corruption)
         if (shares == 0) revert ZeroSharesMinted();
 
         // Slippage check
         if (shares < minShares) revert SlippageExceeded(shares, minShares);
 
-        // Update tenant position
+        // Update tenant position using actual USDC consumed, not requested amount
         TenantPosition storage pos = _tenantPositions[tenantId];
         pos.shares += shares;
-        pos.depositedAmount += usdcAmount;
+        pos.depositedAmount += actualUsdcConsumed;
 
         // Update global totals
         totalTenantShares += shares;
-        totalDeposited += usdcAmount;
+        totalDeposited += actualUsdcConsumed;
 
-        emit TenantDeposit(tenantId, usdcAmount, shares);
+        emit TenantDeposit(tenantId, actualUsdcConsumed, shares);
     }
 
     /// @notice Withdraw USDC from the Morpho vault on behalf of a tenant
@@ -339,6 +344,16 @@ contract TreasuryVault is Module, ReentrancyGuard, Pausable, ITreasuryVault {
         address oldVault = morphoVault;
         morphoVault = newVault;
         emit MorphoVaultUpdated(oldVault, newVault);
+    }
+
+    /// @notice Disabled — avatar and target are immutable after construction
+    function setAvatar(address) external override onlyOwner {
+        revert InvalidAddress();
+    }
+
+    /// @notice Disabled — avatar and target are immutable after construction
+    function setTarget(address) external override onlyOwner {
+        revert InvalidAddress();
     }
 
     // ============ View Functions ============

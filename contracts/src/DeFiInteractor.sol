@@ -43,6 +43,7 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
     error ExecutionFailed();
     error SlippageExceeded(uint256 actual, uint256 limit);
     error WouldDesyncTenantShares(uint256 remainingShares, uint256 tenantShares);
+    error TreasuryVaultAlreadySet();
 
     // ============ Events ============
 
@@ -301,10 +302,40 @@ contract DeFiInteractor is Module, ReentrancyGuard, Pausable, IDeFiInteractor {
         emit OperatorUpdated(oldOperator, newOperator);
     }
 
-    /// @notice Set the TreasuryVault address for cross-module share desync protection
-    /// @param _treasuryVault The TreasuryVault address (address(0) to disable check)
+    /// @notice Set the TreasuryVault address for cross-module share desync protection (one-way)
+    /// @param _treasuryVault The TreasuryVault address
     function setTreasuryVault(address _treasuryVault) external override onlyOwner {
+        if (_treasuryVault == address(0)) revert InvalidVault();
+        if (treasuryVault != address(0)) revert TreasuryVaultAlreadySet();
         treasuryVault = _treasuryVault;
+        emit TreasuryVaultUpdated(address(0), _treasuryVault);
+    }
+
+    /// @notice Disabled — avatar and target are immutable after construction
+    function setAvatar(address) external override onlyOwner {
+        revert InvalidAddress();
+    }
+
+    /// @notice Disabled — avatar and target are immutable after construction
+    function setTarget(address) external override onlyOwner {
+        revert InvalidAddress();
+    }
+
+    // ============ Rewards ============
+
+    /// @notice Claim rewards from a Morpho rewards distributor
+    /// @param distributor The rewards distributor address (must be allowlisted)
+    /// @param claimData Encoded claim calldata specific to the distributor
+    function claimRewards(address distributor, bytes calldata claimData)
+        external
+        onlyOperator
+        nonReentrant
+        whenNotPaused
+    {
+        _requireAllowlisted(distributor);
+        bool success = exec(distributor, 0, claimData, ISafe.Operation.Call);
+        if (!success) revert ExecutionFailed();
+        emit RewardsClaimed(distributor);
     }
 
     // ============ Internal Functions ============

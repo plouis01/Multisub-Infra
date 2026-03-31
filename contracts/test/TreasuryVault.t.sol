@@ -731,7 +731,7 @@ contract TreasuryVaultTest is Test {
         assertEq(vault.morphoVault(), newVault);
     }
 
-    // ============ Fix M-10: redeemForTenant Tests ============
+    // ============ redeemForTenant Tests ============
 
     function test_redeemForTenant_redeemsByShareCount() public {
         // Deposit 100k at 1:1 rate
@@ -949,5 +949,19 @@ contract TreasuryVaultTest is Test {
         // All shares gone, deposited zeroed
         assertEq(vault.getTenantShares(tenantA), 0);
         assertEq(vault.getTenantDeposited(tenantA), 0);
+    }
+
+    // ============ setAvatar/setTarget Locked Tests ============
+
+    function test_setAvatar_reverts() public {
+        vm.expectRevert();
+        vm.prank(owner);
+        vault.setAvatar(address(0x999));
+    }
+
+    function test_setTarget_reverts() public {
+        vm.expectRevert();
+        vm.prank(owner);
+        vault.setTarget(address(0x999));
     }
 }

@@ -658,4 +658,88 @@ contract DeFiInteractorTest is Test {
         interactor.setTreasuryVault(address(0x123));
         assertEq(interactor.treasuryVault(), address(0x123));
     }
+
+    function test_setTreasuryVault_revertsOnZeroAddress() public {
+        vm.expectRevert(DeFiInteractor.InvalidVault.selector);
+        vm.prank(owner);
+        interactor.setTreasuryVault(address(0));
+    }
+
+    function test_setTreasuryVault_revertsOnSecondSet() public {
+        vm.startPrank(owner);
+        interactor.setTreasuryVault(address(0x123));
+
+        vm.expectRevert(DeFiInteractor.TreasuryVaultAlreadySet.selector);
+        interactor.setTreasuryVault(address(0x456));
+        vm.stopPrank();
+    }
+
+    function test_setTreasuryVault_emitsEvent() public {
+        vm.expectEmit(true, true, false, false);
+        emit IDeFiInteractor.TreasuryVaultUpdated(address(0), address(0x123));
+        vm.prank(owner);
+        interactor.setTreasuryVault(address(0x123));
+    }
+
+    // ============ setAvatar/setTarget Locked Tests ============
+
+    function test_setAvatar_reverts() public {
+        vm.expectRevert();
+        vm.prank(owner);
+        interactor.setAvatar(address(0x999));
+    }
+
+    function test_setTarget_reverts() public {
+        vm.expectRevert();
+        vm.prank(owner);
+        interactor.setTarget(address(0x999));
+    }
+
+    // ============ claimRewards Tests ============
+
+    function test_claimRewards_executesClaimOnAllowlistedDistributor() public {
+        address distributor = address(0x555);
+        vm.prank(owner);
+        interactor.addAllowlistedVault(distributor);
+
+        bytes memory claimData = abi.encodeWithSignature("claim(address)", address(safe));
+
+        vm.prank(operatorEOA);
+        interactor.claimRewards(distributor, claimData);
+    }
+
+    function test_claimRewards_revertsOnNonAllowlisted() public {
+        address distributor = address(0x555);
+        bytes memory claimData = abi.encodeWithSignature("claim(address)", address(safe));
+
+        vm.expectRevert(abi.encodeWithSelector(DeFiInteractor.VaultNotAllowlisted.selector, distributor));
+        vm.prank(operatorEOA);
+        interactor.claimRewards(distributor, claimData);
+    }
+
+    function test_claimRewards_revertsForNonOperator() public {
+        address distributor = address(0x555);
+        vm.prank(owner);
+        interactor.addAllowlistedVault(distributor);
+
+        bytes memory claimData = abi.encodeWithSignature("claim(address)", address(safe));
+
+        vm.expectRevert(DeFiInteractor.OnlyOperator.selector);
+        vm.prank(attacker);
+        interactor.claimRewards(distributor, claimData);
+    }
+
+    function test_claimRewards_emitsEvent() public {
+        address distributor = address(0x555);
+        vm.prank(owner);
+        interactor.addAllowlistedVault(distributor);
+
+        bytes memory claimData = abi.encodeWithSignature("claim(address)", address(safe));
+
+        vm.expectEmit(true, false, false, false);
+        emit IDeFiInteractor.RewardsClaimed(distributor);
+
+        vm.prank(operatorEOA);
+        interactor.claimRewards(distributor, claimData);
+    }
 }

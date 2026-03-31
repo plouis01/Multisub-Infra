@@ -25,6 +25,11 @@ optimizer = true
 optimizer_runs = 1
 ignored_error_codes = [5740, 3860]
 
+[invariant]
+runs = 256
+depth = 50
+fail_on_revert = false
+
 [rpc_endpoints]
 base_sepolia = "${BASE_SEPOLIA_RPC_URL}"
 base_mainnet = "${BASE_MAINNET_RPC_URL}"

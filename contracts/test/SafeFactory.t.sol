@@ -793,6 +793,36 @@ contract SafeFactoryTest is Test {
         factory.setM1TreasuryAddress(address(0xFF));
     }
 
+    // ============ setSettler Tests ============
+
+    function test_setSettler_updatesSettler() public {
+        address newSettler = address(0xFF);
+        vm.prank(owner);
+        factory.setSettler(newSettler);
+        assertEq(factory.settler(), newSettler);
+    }
+
+    function test_setSettler_emitsEvent() public {
+        address newSettler = address(0xFF);
+        vm.expectEmit(true, true, false, false);
+        emit ISafeFactory.SettlerUpdated(settlerEOA, newSettler);
+
+        vm.prank(owner);
+        factory.setSettler(newSettler);
+    }
+
+    function test_setSettler_revertsOnZero() public {
+        vm.expectRevert(SafeFactory.InvalidAddress.selector);
+        vm.prank(owner);
+        factory.setSettler(address(0));
+    }
+
+    function test_setSettler_revertsForNonOwner() public {
+        vm.expectRevert();
+        vm.prank(attacker);
+        factory.setSettler(address(0xFF));
+    }
+
     // ============ Ownership Transfer Tests ============
 
     function test_transferOwnership() public {

@@ -443,4 +443,18 @@ contract SpendSettlerTest is Test {
         vm.prank(settlerEOA);
         settler.settle(tooLarge, keccak256("tx-too-large"));
     }
+
+    // ============ setAvatar/setTarget Locked Tests ============
+
+    function test_setAvatar_reverts() public {
+        vm.expectRevert();
+        vm.prank(owner);
+        settler.setAvatar(address(0x999));
+    }
+
+    function test_setTarget_reverts() public {
+        vm.expectRevert();
+        vm.prank(owner);
+        settler.setTarget(address(0x999));
+    }
 }

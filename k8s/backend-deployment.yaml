@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multisubs-backend
+  namespace: multisubs
+  labels:
+    app: multisubs-backend
+    app.kubernetes.io/name: multisubs-backend
+    app.kubernetes.io/part-of: multisubs-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: multisubs-backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: multisubs-backend
+    spec:
+      containers:
+        - name: backend
+          image: REPLACE_WITH_ECR_IMAGE:latest
+          ports:
+            - containerPort: 3000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: multisubs-backend-config
+            - secretRef:
+                name: multisubs-backend-secret
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      restartPolicy: Always

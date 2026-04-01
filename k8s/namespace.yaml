@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: multisubs
+  labels:
+    app.kubernetes.io/name: multisubs
+    app.kubernetes.io/part-of: multisubs-platform

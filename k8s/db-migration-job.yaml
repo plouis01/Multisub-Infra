@@ -1,0 +1,32 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: multisubs-db-migrate
+  namespace: multisubs
+  labels:
+    app: multisubs-backend
+    app.kubernetes.io/name: multisubs-db-migrate
+    app.kubernetes.io/part-of: multisubs-platform
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: multisubs-db-migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: REPLACE_WITH_ECR_IMAGE:latest
+          command: ["npx", "prisma", "migrate", "deploy"]
+          envFrom:
+            - secretRef:
+                name: multisubs-backend-secret
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"

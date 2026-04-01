@@ -1,0 +1,8 @@
+{
+  "filter_paths": ["lib/", "test/", "script/"],
+  "solc_remaps": [
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+    "@safe-global/=lib/safe-smart-account/contracts/",
+    "forge-std/=lib/forge-std/src/"
+  ]
+}

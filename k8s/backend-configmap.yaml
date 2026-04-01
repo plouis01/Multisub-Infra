@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: multisubs-backend-config
+  namespace: multisubs
+  labels:
+    app: multisubs-backend
+    app.kubernetes.io/name: multisubs-backend
+    app.kubernetes.io/part-of: multisubs-platform
+data:
+  PORT: "3000"
+  NODE_ENV: "production"
+  CORS_ORIGIN: "https://app.multisubs.io"
+  CHAIN_ID: "8453"
+  WATCHER_POLL_INTERVAL_MS: "3000"
+  WATCHER_START_BLOCK: "0"
+  SETTLEMENT_MAX_RETRIES: "3"
+  SETTLEMENT_GAS_BUMP_PERCENT: "20"
+  LITHIC_ENVIRONMENT: "production"
